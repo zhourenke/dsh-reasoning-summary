@@ -9,7 +9,10 @@
  * `PluginCard` (dsh-client-ui-settings-plugins) for the collapsible shell and
  * `SubagentModelSelectionCard` (same package) for the bordered model list with
  * provider groups, so this plugin's settings entry looks like the sibling
- * cards in the same settings page.
+ * cards in the same settings page. Routes that vanished from the catalog stay
+ * listed as unchecked-able rows in a trailing "saved but currently
+ * unavailable" group, exactly like the Subagent card: the only way to remove
+ * one is to uncheck it and save; there is no separate delete control.
  */
 interface Window {
     __ModuleLoader__: {

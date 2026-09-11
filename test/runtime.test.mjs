@@ -1062,10 +1062,17 @@ test('the settings card follows official plugin-card chrome and exposes model ro
     assert.match(source, /\.rs-models \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\);[^}]*border-radius:\s*8px;[^}]*max-height:\s*280px/)
     assert.match(source, /\.rs-model \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto;[^}]*padding:\s*6px/)
     assert.match(source, /\.rs-model-group \+ \.rs-model-group \{[^}]*border-top:\s*\.5px solid var\(--dsw-alias-border-l3\)/)
-    // Removal mirrors the Models settings trash icon button (iconButton danger).
-    assert.match(source, /IconTrashOutline16/)
-    assert.match(source, /\.rs-icon-button \{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*6px/)
-    assert.match(source, /\.rs-icon-button-danger:hover:not\(:disabled\) \{[^}]*color:\s*var\(--dsw-alias-state-error-primary\)/)
+    // Unavailable rows mirror the Subagent card: a plain checkbox row with the
+    // unavailable label, no trash/delete control of any kind.
+    assert.match(source, /\.rs-unavailable \{[^}]*color:\s*var\(--dsw-alias-label-tertiary\);[^}]*font-size:\s*11px/)
+    assert.doesNotMatch(source, /IconTrashOutline16/)
+    assert.doesNotMatch(source, /\.rs-icon-button/)
+    assert.doesNotMatch(source, /removeModel\s*:\s*['"](?:删除模型|Remove model)['"]/)
+    // All routes missing from the catalog collect in one trailing group,
+    // regardless of whether their provider survived.
+    assert.match(source, /unavailable\.push\(item\)/)
+    assert.doesNotMatch(source, /staleByProvider/)
+    assert.doesNotMatch(source, /orphanStale/)
     // No manual "refresh catalog" control remains; failures offer a retry.
     assert.doesNotMatch(source, /refresh\s*:\s*['"](?:刷新目录|Refresh catalog)['"]/)
     assert.doesNotMatch(source, /\.rs-refresh/)

@@ -9,7 +9,10 @@
  * `PluginCard` (dsh-client-ui-settings-plugins) for the collapsible shell and
  * `SubagentModelSelectionCard` (same package) for the bordered model list with
  * provider groups, so this plugin's settings entry looks like the sibling
- * cards in the same settings page.
+ * cards in the same settings page. Routes that vanished from the catalog stay
+ * listed as unchecked-able rows in a trailing "saved but currently
+ * unavailable" group, exactly like the Subagent card: the only way to remove
+ * one is to uncheck it and save; there is no separate delete control.
  */
 
 interface Window {
@@ -27,7 +30,7 @@ window.__ModuleLoader__.load({
     const React: any = require('react')
     const e = React.createElement
     const { useEffect, useMemo, useState } = React
-    const { IconChevronDownOutline14, IconTrashOutline16, Tag } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { IconChevronDownOutline14, Tag } = require('@deepseek-ai/dsh-client-ui-primitives')
 
     type Selection = { provider: string; model: string }
     type CatalogModel = { id: string; name?: string; description?: string }
@@ -68,7 +71,6 @@ window.__ModuleLoader__.load({
       selected: '已选择 {n} 个模型',
       unavailable: '当前不可用',
       unavailableGroup: '已保存但当前不可用',
-      removeModel: '删除模型',
       noModels: '当前没有可用的模型目录。',
       readOnly: '设置当前为只读。',
       save: '保存',
@@ -90,7 +92,6 @@ window.__ModuleLoader__.load({
       selected: '{n} model(s) selected',
       unavailable: 'Currently unavailable',
       unavailableGroup: 'Saved but currently unavailable',
-      removeModel: 'Remove model',
       noModels: 'No model catalog is currently available.',
       readOnly: 'Settings are read-only.',
       save: 'Save',
@@ -207,11 +208,6 @@ window.__ModuleLoader__.load({
           : [...current, item])
         setDirty(true)
       }
-      const removeStale = (item: Selection) => {
-        const key = keyOf(item)
-        setDraftModels((current: Selection[]) => current.filter((entry: Selection) => keyOf(entry) !== key))
-        setDirty(true)
-      }
       const save = async () => {
         if (!snapshot.writable || saving) return
         setSaving(true)
@@ -231,35 +227,27 @@ window.__ModuleLoader__.load({
         setFailed(false)
       }
 
-      // Keep a saved route at its provider's position when the provider still
-      // exists, and collect routes whose provider vanished into a trailing
-      // "saved but unavailable" group — never at the top of the list.
-      const staleByProvider = new Map<string, Selection[]>()
-      const orphanStale: Selection[] = []
-      for (const item of draftModels) {
+      // Candidate rows mirror the Subagent card exactly: a row exists for every
+      // catalog model plus every saved route that is no longer in the catalog
+      // (whether its provider survived or not). Unavailable routes collect in a
+      // trailing group and keep their checkbox; unchecking one keeps the row
+      // visible until Save commits the removal, so a vanished route is never
+      // silently dropped.
+      const effective = new Map<string, Selection>()
+      for (const item of copySelections(value)) effective.set(keyOf(item), item)
+      for (const item of draftModels) effective.set(keyOf(item), item)
+      const unavailable: Selection[] = []
+      for (const item of effective.values()) {
         if (catalogKeys !== null && catalogKeys.has(keyOf(item))) continue
-        const host = (catalog ?? []).find((group: CatalogGroup) => group.id === item.provider)
-        if (host) {
-          const list = staleByProvider.get(item.provider) ?? []
-          list.push(item)
-          staleByProvider.set(item.provider, list)
-        } else {
-          orphanStale.push(item)
-        }
+        unavailable.push(item)
       }
-      const renderStaleRow = (item: Selection) => e('div', { className: 'rs-model', key: `stale:${keyOf(item)}` },
-        e('input', { type: 'checkbox', checked: true, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
+      const renderRow = (providerName: string, item: Selection, available: boolean, modelName: string) => e('label', { className: 'rs-model', key: keyOf(item) },
+        e('input', { type: 'checkbox', checked: selected.has(keyOf(item)), disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
         e('span', null,
-          e('span', { className: 'rs-model-name' }, `${item.provider} / ${item.model}`),
-          e('span', { className: 'rs-route' }, t('unavailable')),
+          e('span', { className: 'rs-model-name' }, modelName),
+          e('span', { className: 'rs-route' }, `${providerName} · ${item.provider}/${item.model}`),
         ),
-        e('button', {
-          type: 'button', className: 'rs-icon-button rs-icon-button-danger',
-          'aria-label': `${t('removeModel')}: ${item.provider} / ${item.model}`,
-          title: t('removeModel'),
-          disabled: !snapshot.writable || saving,
-          onClick: () => removeStale(item),
-        }, e(IconTrashOutline16, { size: 14 })),
+        !available ? e('span', { className: 'rs-unavailable' }, t('unavailable')) : null,
       )
 
       return e('li', { className: `rs-card ${open ? 'rs-card-open' : ''}` },
@@ -288,29 +276,21 @@ window.__ModuleLoader__.load({
               e('button', { type: 'button', disabled: saving, onClick: () => { void loadCatalog() } }, t('retry')),
             ) : null,
             catalog === null && catalogError === null ? e('p', { className: 'rs-notice', role: 'status' }, t('loading')) : null,
-            (catalog && catalog.length > 0) || draftModels.length > 0 ? e('fieldset', { className: 'rs-models' },
+            (catalog && catalog.length > 0) || effective.size > 0 ? e('fieldset', { className: 'rs-models' },
               e('legend', null, t('models')),
               catalog?.map((group: CatalogGroup) => e('div', { className: 'rs-model-group', key: group.id },
                 e('div', { className: 'rs-provider' }, group.name ?? group.id),
                 (group.models ?? []).map((model: CatalogModel) => {
                   const item = { provider: group.id, model: model.id }
-                  const checked = selected.has(keyOf(item))
-                  return e('div', { className: 'rs-model', key: keyOf(item) },
-                    e('input', { type: 'checkbox', checked, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
-                    e('span', null,
-                      e('span', { className: 'rs-model-name' }, model.name && model.name !== model.id ? model.name : model.id),
-                      e('span', { className: 'rs-route' }, `${group.id} / ${model.id}`),
-                    ),
-                  )
+                  return renderRow(group.name ?? group.id, item, true, model.name && model.name !== model.id ? model.name : model.id)
                 }),
-                (staleByProvider.get(group.id) ?? []).map(renderStaleRow),
               )),
-              orphanStale.length > 0 ? e('div', { className: 'rs-model-group' },
+              unavailable.length > 0 ? e('div', { className: 'rs-model-group' },
                 e('div', { className: 'rs-provider' }, t('unavailableGroup')),
-                orphanStale.map(renderStaleRow),
+                unavailable.map((item: Selection) => renderRow(item.provider, item, false, item.model)),
               ) : null,
             ) : null,
-            catalog && catalog.length === 0 && draftModels.length === 0 ? e('p', { className: 'rs-notice' }, t('noModels')) : null,
+            catalog && catalog.length === 0 && effective.size === 0 ? e('p', { className: 'rs-notice' }, t('noModels')) : null,
           ),
           e('div', { className: 'rs-footer' },
             failed ? e('p', { className: 'rs-failed', role: 'status' }, t('saveFailed')) : null,
@@ -352,10 +332,7 @@ window.__ModuleLoader__.load({
       .rs-model-name, .rs-route { text-overflow: ellipsis; white-space: nowrap; display: block; overflow: hidden; }
       .rs-model-name { color: var(--dsw-alias-label-primary); font-size: 13px; }
       .rs-route { color: var(--dsw-alias-label-tertiary); margin-top: 2px; font-size: 11px; }
-      .rs-icon-button { box-sizing: border-box; width: 28px; height: 28px; color: var(--dsw-alias-label-tertiary); cursor: pointer; background: transparent; border: none; border-radius: 6px; justify-content: center; align-items: center; display: inline-flex; }
-      .rs-icon-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-      .rs-icon-button:disabled { cursor: default; opacity: .4; }
-      .rs-icon-button-danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); color: var(--dsw-alias-state-error-primary); }
+      .rs-unavailable { color: var(--dsw-alias-label-tertiary); font-size: 11px; }
       .rs-discard, .rs-save { appearance: none; border: 1px solid transparent; border-radius: 8px; padding: 5px 14px; font: inherit; font-size: 13px; line-height: 1.5; cursor: pointer; }
       .rs-discard { border-color: var(--dsw-alias-border-l2); background: none; color: var(--dsw-alias-label-secondary); }
       .rs-discard:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-dimmed); }
