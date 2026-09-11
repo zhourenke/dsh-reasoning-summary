@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { apply as applyRepeatToolReminder } from '@deepseek-ai/dsh-repeat-tool-reminder'
 import { apply, MISSING_TEXT, PARTIAL_TEXT } from '../lib/index.js'
 
 function streamOf(chunks) {
@@ -1416,4 +1417,129 @@ test('duplicate durable tool results cannot release a second relay', async () =>
   await flushMicrotasks()
   assert.equal(harness.injected.length, 1)
   assert.equal(relayEvents(agent.session).length, 0)
+})
+
+// ---------------------------------------------------------------------------
+// Cross-plugin contract: dsh-repeat-tool-reminder's repeat chain
+//
+// The guard clears its per-agent chain when the batch handed to `agent/pre-step`
+// contains any message with `source.kind === 'user'`
+// (dsh-repeat-tool-reminder/lib/index.js:1510). Everything this plugin puts in
+// that batch must therefore stay `kind: 'plugin'`, or it would silently reset
+// the 3/5/8-repeat reminders for the rest of the session.
+//
+// These tests run the REAL guard, not a transcription of its rule. It needs only
+// `ctx.on` and its config (dsh-repeat-tool-reminder/lib/index.js:1450-1512), so
+// a two-line ctx is enough to install it next to this plugin.
+// ---------------------------------------------------------------------------
+
+const REMINDER_CONFIG = { thresholds: [3, 5, 8], include: [], exclude: [], argumentsPreviewChars: 500 }
+
+/** Install the real guard over a minimal `ctx.on` capture; returns its handlers. */
+function installRepeatToolReminder(config = REMINDER_CONFIG) {
+  const handlers = new Map()
+  applyRepeatToolReminder({
+    on: (event, listener) => {
+      handlers.set(event, listener)
+      return () => {}
+    },
+  }, config)
+  return handlers
+}
+
+/**
+ * One `tools/post-execute` pass. The host dispatches this waterfall with the
+ * default `() => Promise.resolve({ kind: 'accept' })`
+ * (dsh-tools/lib/index.js:3378), so that is what `next()` returns here.
+ */
+async function attemptTool(handlers, agent, name, args) {
+  const decision = await handlers.get('tools/post-execute')(
+    { agent, name, arguments: args },
+    undefined,
+    async () => ({ kind: 'accept' }),
+  )
+  return decision.additionalContexts ?? []
+}
+
+/**
+ * Hand the guard the batch the loop would: `messages: claimed`, i.e. exactly what
+ * `agent/pre-step` receives (dsh-agent-loop/lib/index.js:911-912).
+ */
+async function claimIntoPreStep(handlers, agent) {
+  const messages = agent.takeInbox()
+  await handlers.get('agent/pre-step')(
+    { agent, messages, turn: 1, step: 1, signal: undefined },
+    async () => ({ kind: 'enter', messages }),
+  )
+  return messages
+}
+
+/** Drive one tool step whose summary is delivered into the next-step inbox. */
+async function injectRelayThroughToolStep(harness, agent, turn, step) {
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  const toolResult = harness.listeners.get('tools/result')
+  const callId = `call-${turn}-${step}`
+  await preStep({ agent, turn, step }, async () => ({ kind: 'enter', messages: [] }))
+  for await (const _chunk of stream(mainStreamOptions(agent), () => streamOf([
+    textStart(),
+    textDelta('<summary>inspected the workspace</summary>', 0),
+    textEnd('<summary>inspected the workspace</summary>', 0),
+    { type: 'block-start', index: 1, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 1, id: callId, name: 'read_file', argumentsDelta: '{"path":"x"}' },
+    { type: 'block-end', index: 1, block: { type: 'tool-call', id: callId, name: 'read_file', arguments: '{"path":"x"}' } },
+    finish(),
+  ]))) {}
+  appendAssistant(agent, turn, step, [{ type: 'tool-call', id: callId, name: 'read_file', arguments: '{"path":"x"}' }])
+  toolResult({ agent, callId, parent: undefined }, { concludesTurn: undefined })
+  appendToolResult(agent, turn, step, callId)
+  await flushMicrotasks()
+}
+
+test('the next-step relay keeps the repeat-tool reminder chain alive', async () => {
+  const handlers = installRepeatToolReminder()
+  const harness = makeHarness({ models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }] })
+  const agent = makeAgent(harness)
+  await admitRoute(harness, agent, { provider: 'cotton-codex', model: 'gpt-5.6-luna', turn: 2, step: 1 })
+  await injectRelayThroughToolStep(harness, agent, 2, 1)
+  assert.equal(harness.injected.length, 1, 'the relay must reach the inbox for this test to mean anything')
+
+  // Two identical attempts leave the chain at 2: below the first threshold.
+  assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
+  assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
+
+  // The next step claims the plugin's relay — this is the batch the guard scans.
+  const claimed = await claimIntoPreStep(handlers, agent)
+  const mine = claimed.filter((message) => message.source?.plugin === 'reasoning-summary')
+  assert.equal(mine.length, 1)
+  assert.equal(mine[0].source.kind, 'plugin')
+  assert.equal(claimed.some((message) => message.source?.kind === 'user'), false)
+
+  // A third identical attempt is still the third in the run, so the guard fires.
+  const contexts = await attemptTool(handlers, agent, 'read_file', { path: 'x' })
+  assert.equal(contexts.length, 1)
+  assert.match(contexts[0].content[0].text, /^You are repeating the exact same tool call/)
+  assert.equal(contexts[0].source.kind, 'plugin')
+})
+
+test('control: a user-sourced message in that same batch does reset the chain', async () => {
+  const handlers = installRepeatToolReminder()
+  const harness = makeHarness({ models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }] })
+  const agent = makeAgent(harness)
+
+  assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
+  assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
+
+  // Same batch size as the test above, differing in exactly one respect: the
+  // source kind. If this did not reset the chain, the test above would pass for
+  // the wrong reason (the reset path never running at all).
+  agent.inject(createUserMessage({
+    content: [{ type: 'text', text: 'stop repeating that call' }],
+    source: { kind: 'user' },
+  }))
+  const claimed = await claimIntoPreStep(handlers, agent)
+  assert.equal(claimed.length, 1)
+  assert.equal(claimed[0].source.kind, 'user')
+
+  assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
 })
