@@ -137,7 +137,7 @@ pnpm run build
 pnpm test
 ```
 
-当前 `pnpm test` 通过 60 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/inferred/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器，以及客户端只经 `remote.session` 命名空间读取宿主模型目录。其中 `test/client.test.mjs` 会真正执行 `lib/client.js`：注入 `window.__ModuleLoader__` 后捕获注册定义、以桩 `require` 调用工厂、再以模拟 ctx 调用 `apply`，从而验证插槽占用、样式注入，以及三条模型目录解析路径（`ctx.get('remote.session')`、`ctx.get('remote')`、`ctx.remote.session`）。
+当前 `pnpm test` 通过 62 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/inferred/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器，以及客户端只经 `remote.session` 命名空间读取宿主模型目录。其中 `test/client.test.mjs` 会真正执行 `lib/client.js`：注入 `window.__ModuleLoader__` 后捕获注册定义、以桩 `require` 调用工厂、再以模拟 ctx 调用 `apply`，从而验证插槽占用、样式注入，以及三条模型目录解析路径（`ctx.get('remote.session')`、`ctx.get('remote')`、`ctx.remote.session`）。该文件同时把实测到的宿主契约写进桩与注释（`settings.plugin.item` 是宿主不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染），并实际挂载一次卡片元素，确认注入面被转交给组件、未就绪时不产出任何元素。
 
 ### 产物提交纪律
 
