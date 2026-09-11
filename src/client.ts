@@ -4,6 +4,12 @@
  * The card deliberately uses the configurable-plugin slot owned by DSH's
  * official settings surface. It stages changes locally and writes only on
  * Save, while the model catalog is read live from the host API.
+ *
+ * The card chrome and the model list follow the current host's peer cards:
+ * `PluginCard` (dsh-client-ui-settings-plugins) for the collapsible shell and
+ * `SubagentModelSelectionCard` (same package) for the bordered model list with
+ * provider groups, so this plugin's settings entry looks like the sibling
+ * cards in the same settings page.
  */
 
 interface Window {
@@ -21,7 +27,7 @@ window.__ModuleLoader__.load({
     const React: any = require('react')
     const e = React.createElement
     const { useEffect, useMemo, useState } = React
-    const { IconChevronDownOutline14 } = require('@deepseek-ai/dsh-client-ui-primitives')
+    const { IconChevronDownOutline14, IconTrashOutline16, Tag } = require('@deepseek-ai/dsh-client-ui-primitives')
 
     type Selection = { provider: string; model: string }
     type CatalogModel = { id: string; name?: string; description?: string }
@@ -58,10 +64,11 @@ window.__ModuleLoader__.load({
       models: '触发模型',
       modelsHint: '模型目录中不可用且已启用的条目仍会保留显示。',
       loading: '正在加载模型目录…',
-      refresh: '刷新目录',
+      retry: '重试',
       selected: '已选择 {n} 个模型',
-      unavailable: '不可用或已从目录消失',
-      cleanup: '清理选择',
+      unavailable: '当前不可用',
+      unavailableGroup: '已保存但当前不可用',
+      removeModel: '删除模型',
       noModels: '当前没有可用的模型目录。',
       readOnly: '设置当前为只读。',
       save: '保存',
@@ -79,10 +86,11 @@ window.__ModuleLoader__.load({
       models: 'Trigger models',
       modelsHint: 'Enabled entries that are unavailable in the model catalog remain visible.',
       loading: 'Loading model catalog…',
-      refresh: 'Refresh catalog',
+      retry: 'Retry',
       selected: '{n} model(s) selected',
-      unavailable: 'Unavailable or missing from catalog',
-      cleanup: 'Remove selection',
+      unavailable: 'Currently unavailable',
+      unavailableGroup: 'Saved but currently unavailable',
+      removeModel: 'Remove model',
       noModels: 'No model catalog is currently available.',
       readOnly: 'Settings are read-only.',
       save: 'Save',
@@ -188,7 +196,6 @@ window.__ModuleLoader__.load({
         for (const group of catalog as CatalogGroup[]) for (const model of (group.models ?? []) as CatalogModel[]) result.add(keyOf({ provider: group.id, model: model.id }))
         return result
       }, [catalog])
-      const stale: Selection[] = catalogKeys === null ? draftModels : draftModels.filter((item: Selection) => !catalogKeys.has(keyOf(item)))
       const selected = new Set(draftModels.map(keyOf))
 
       if (snapshot.status !== 'ready') return null
@@ -200,8 +207,7 @@ window.__ModuleLoader__.load({
           : [...current, item])
         setDirty(true)
       }
-      const cleanStale = (item: Selection) => {
-        if (!catalogKeys) return
+      const removeStale = (item: Selection) => {
         const key = keyOf(item)
         setDraftModels((current: Selection[]) => current.filter((entry: Selection) => keyOf(entry) !== key))
         setDirty(true)
@@ -225,6 +231,37 @@ window.__ModuleLoader__.load({
         setFailed(false)
       }
 
+      // Keep a saved route at its provider's position when the provider still
+      // exists, and collect routes whose provider vanished into a trailing
+      // "saved but unavailable" group — never at the top of the list.
+      const staleByProvider = new Map<string, Selection[]>()
+      const orphanStale: Selection[] = []
+      for (const item of draftModels) {
+        if (catalogKeys !== null && catalogKeys.has(keyOf(item))) continue
+        const host = (catalog ?? []).find((group: CatalogGroup) => group.id === item.provider)
+        if (host) {
+          const list = staleByProvider.get(item.provider) ?? []
+          list.push(item)
+          staleByProvider.set(item.provider, list)
+        } else {
+          orphanStale.push(item)
+        }
+      }
+      const renderStaleRow = (item: Selection) => e('div', { className: 'rs-model', key: `stale:${keyOf(item)}` },
+        e('input', { type: 'checkbox', checked: true, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
+        e('span', null,
+          e('span', { className: 'rs-model-name' }, `${item.provider} / ${item.model}`),
+          e('span', { className: 'rs-route' }, t('unavailable')),
+        ),
+        e('button', {
+          type: 'button', className: 'rs-icon-button rs-icon-button-danger',
+          'aria-label': `${t('removeModel')}: ${item.provider} / ${item.model}`,
+          title: t('removeModel'),
+          disabled: !snapshot.writable || saving,
+          onClick: () => removeStale(item),
+        }, e(IconTrashOutline16, { size: 14 })),
+      )
+
       return e('li', { className: `rs-card ${open ? 'rs-card-open' : ''}` },
         e('button', {
           type: 'button', className: 'rs-head', 'aria-expanded': open,
@@ -232,51 +269,51 @@ window.__ModuleLoader__.load({
           onClick: () => setOpen(!open),
         },
           e('span', { className: 'rs-heading' },
-            e('strong', null, t('title')),
-            e('span', null, t('description')),
+            e('span', { className: 'rs-name' }, t('title')),
+            e('span', { className: 'rs-description' }, t('description')),
           ),
-          dirty ? e('span', { className: 'rs-pending' }, t('unsaved')) : null,
+          dirty ? e(Tag, { tone: 'neutral', className: 'rs-pending' }, t('unsaved')) : null,
           e(IconChevronDownOutline14, { className: `rs-chevron ${open ? 'rs-chevron-open' : ''}` }),
         ),
         open ? e('div', { className: 'rs-body' },
           !snapshot.writable ? e('p', { className: 'rs-readonly', role: 'status' }, t('readOnly')) : null,
-          e('div', { className: 'rs-field rs-model-field' },
+          e('div', { className: 'rs-field' },
             e('div', { className: 'rs-model-title' },
               e('span', { className: 'rs-model-label' }, t('models')),
               e('span', { className: 'rs-count' }, t('selected', draftModels.length)),
-              e('button', { type: 'button', className: 'rs-refresh', onClick: () => { void loadCatalog() } }, t('refresh')),
             ),
             e('p', { className: 'rs-hint' }, t('modelsHint')),
-            catalogError !== null ? e('p', { className: 'rs-error' }, `${t('catalogFailed')} (${catalogError})`) : null,
-            catalog === null && catalogError === null ? e('p', { className: 'rs-loading' }, t('loading')) : null,
-            stale.map((item) => e('div', { className: 'rs-row rs-stale', key: `stale:${keyOf(item)}` },
-              e('label', { className: 'rs-row-main' },
-                e('input', { type: 'checkbox', checked: true, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
-                e('span', null,
-                  e('strong', null, `${item.provider} / ${item.model}`),
-                  e('small', null, t('unavailable')),
-                ),
-              ),
-              e('button', { type: 'button', className: 'rs-remove', disabled: !snapshot.writable || saving, onClick: () => cleanStale(item) }, t('cleanup')),
-            )),
-            catalog?.map((group: CatalogGroup) => e('div', { className: 'rs-group', key: group.id },
-              e('div', { className: 'rs-provider' }, group.name ?? group.id),
-              (group.models ?? []).map((model: CatalogModel) => {
-                const item = { provider: group.id, model: model.id }
-                const checked = selected.has(keyOf(item))
-                return e('label', { className: 'rs-row', key: keyOf(item) },
-                  e('input', { type: 'checkbox', checked, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
-                  e('span', { className: 'rs-row-main' },
-                    e('strong', null, model.name && model.name !== model.id ? model.name : model.id),
-                    e('small', null, `${group.id} / ${model.id}`),
-                  ),
-                )
-              }),
-            )),
-            catalog && catalog.length === 0 ? e('p', { className: 'rs-loading' }, t('noModels')) : null,
+            catalogError !== null ? e('div', { className: 'rs-catalog-error', role: 'alert' },
+              e('span', null, `${t('catalogFailed')} (${catalogError})`),
+              e('button', { type: 'button', disabled: saving, onClick: () => { void loadCatalog() } }, t('retry')),
+            ) : null,
+            catalog === null && catalogError === null ? e('p', { className: 'rs-notice', role: 'status' }, t('loading')) : null,
+            (catalog && catalog.length > 0) || draftModels.length > 0 ? e('fieldset', { className: 'rs-models' },
+              e('legend', null, t('models')),
+              catalog?.map((group: CatalogGroup) => e('div', { className: 'rs-model-group', key: group.id },
+                e('div', { className: 'rs-provider' }, group.name ?? group.id),
+                (group.models ?? []).map((model: CatalogModel) => {
+                  const item = { provider: group.id, model: model.id }
+                  const checked = selected.has(keyOf(item))
+                  return e('div', { className: 'rs-model', key: keyOf(item) },
+                    e('input', { type: 'checkbox', checked, disabled: !snapshot.writable || saving, onChange: () => toggle(item) }),
+                    e('span', null,
+                      e('span', { className: 'rs-model-name' }, model.name && model.name !== model.id ? model.name : model.id),
+                      e('span', { className: 'rs-route' }, `${group.id} / ${model.id}`),
+                    ),
+                  )
+                }),
+                (staleByProvider.get(group.id) ?? []).map(renderStaleRow),
+              )),
+              orphanStale.length > 0 ? e('div', { className: 'rs-model-group' },
+                e('div', { className: 'rs-provider' }, t('unavailableGroup')),
+                orphanStale.map(renderStaleRow),
+              ) : null,
+            ) : null,
+            catalog && catalog.length === 0 && draftModels.length === 0 ? e('p', { className: 'rs-notice' }, t('noModels')) : null,
           ),
           e('div', { className: 'rs-footer' },
-            failed ? e('p', { className: 'rs-error' }, t('saveFailed')) : null,
+            failed ? e('p', { className: 'rs-failed', role: 'status' }, t('saveFailed')) : null,
             e('button', { type: 'button', className: 'rs-discard', disabled: !dirty || saving, onClick: discard }, t('discard')),
             e('button', { type: 'button', className: 'rs-save', disabled: !dirty || saving || !snapshot.writable, onClick: () => { void save() } }, saving ? t('saving') : t('save')),
           ),
@@ -285,47 +322,48 @@ window.__ModuleLoader__.load({
     }
 
     const css = `
-      .rs-card { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-3); list-style: none; transition: border-color .16s, background .16s; }
+      .rs-card { border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-layer-3); border-radius: 16px; list-style: none; transition: border-color .16s, background .16s; }
       .rs-card:hover { border-color: var(--dsw-alias-label-dimmed); }
       .rs-card-open { background: var(--dsw-alias-bg-layer-2); border-color: var(--dsw-alias-label-dimmed); }
       .rs-head { appearance: none; width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; background: transparent; border: 0; border-radius: 12px; display: flex; align-items: center; gap: 12px; padding: 14px 16px; }
       .rs-head:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
-      .rs-head:hover { background: transparent; }
       .rs-heading { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
-      .rs-heading strong { color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 600; line-height: 1.4; }
-      .rs-heading span { color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.5; }
-      .rs-pending, .rs-count { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 500; line-height: 17px; white-space: nowrap; }
+      .rs-name { color: var(--dsw-alias-label-primary); font-size: 15px; font-weight: 600; line-height: 1.4; }
+      .rs-description { color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 1.5; }
+      .rs-pending { flex: none; }
       .rs-chevron { color: var(--dsw-alias-label-tertiary); flex: none; transition: transform .16s; }
       .rs-chevron-open { transform: rotate(180deg); }
-      .rs-body { border-top: 1px solid var(--dsw-alias-border-l2); margin: 0 16px; padding-bottom: 8px; }
-      .rs-field { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; }
-      .rs-model-label { min-width: 0; color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 500; line-height: 1.5; }
-      .rs-hint, .rs-readonly, .rs-loading, .rs-error { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; }
+      .rs-body { border-top: .5px solid var(--dsw-alias-border-l2); margin: 0 16px; padding-bottom: 8px; }
+      .rs-readonly { color: var(--dsw-alias-label-tertiary); margin: 12px 0 0; font-size: 12px; line-height: 1.5; }
+      .rs-field { display: grid; gap: 10px; padding: 12px 0; }
       .rs-model-title { display: flex; align-items: center; gap: 8px; }
-      .rs-count { margin-left: auto; }
-      .rs-refresh, .rs-remove { appearance: none; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 5px 14px; background: transparent; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; line-height: 1.5; cursor: pointer; }
-      .rs-refresh:hover, .rs-remove:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
+      .rs-model-label { min-width: 0; color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 500; line-height: 1.5; }
+      .rs-count { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 500; line-height: 17px; white-space: nowrap; margin-left: auto; }
+      .rs-hint, .rs-notice { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 1.5; }
+      .rs-catalog-error { color: var(--dsw-alias-label-error); display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 12px; line-height: 1.5; }
+      .rs-catalog-error button { color: var(--dsw-alias-brand-primary); cursor: pointer; background: transparent; border: 0; padding: 0; font: inherit; }
+      .rs-models { border: .5px solid var(--dsw-alias-border-l4); border-radius: 8px; display: grid; gap: 6px; min-width: 0; max-height: 280px; margin: 0; padding: 10px; overflow: auto; }
+      .rs-models legend { color: var(--dsw-alias-label-secondary); padding: 0 4px; font-size: 12px; }
+      .rs-model-group { display: grid; gap: 6px; }
+      .rs-model-group + .rs-model-group { border-top: .5px solid var(--dsw-alias-border-l3); margin-top: 4px; padding-top: 10px; }
+      .rs-provider { color: var(--dsw-alias-label-tertiary); padding: 0 6px; font-size: 11px; font-weight: 500; }
+      .rs-model { cursor: pointer; border-radius: 6px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 0; padding: 6px; display: grid; }
+      .rs-model:hover { background: var(--dsw-alias-bg-layer-4); }
+      .rs-model-name, .rs-route { text-overflow: ellipsis; white-space: nowrap; display: block; overflow: hidden; }
+      .rs-model-name { color: var(--dsw-alias-label-primary); font-size: 13px; }
+      .rs-route { color: var(--dsw-alias-label-tertiary); margin-top: 2px; font-size: 11px; }
+      .rs-icon-button { box-sizing: border-box; width: 28px; height: 28px; color: var(--dsw-alias-label-tertiary); cursor: pointer; background: transparent; border: none; border-radius: 6px; justify-content: center; align-items: center; display: inline-flex; }
+      .rs-icon-button:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+      .rs-icon-button:disabled { cursor: default; opacity: .4; }
+      .rs-icon-button-danger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); color: var(--dsw-alias-state-error-primary); }
       .rs-discard, .rs-save { appearance: none; border: 1px solid transparent; border-radius: 8px; padding: 5px 14px; font: inherit; font-size: 13px; line-height: 1.5; cursor: pointer; }
       .rs-discard { border-color: var(--dsw-alias-border-l2); background: none; color: var(--dsw-alias-label-secondary); }
       .rs-discard:hover:not(:disabled) { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-label-dimmed); }
-      .rs-group { margin-top: 8px; }
-      .rs-provider { color: var(--dsw-alias-label-secondary); font-size: 11px; letter-spacing: .04em; line-height: 17px; text-transform: uppercase; margin: 0 0 2px 27px; }
-      .rs-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
-      .rs-row:hover { background: var(--dsw-alias-bg-layer-2); }
-      .rs-row input { accent-color: var(--dsw-alias-brand-primary); flex: none; }
-      .rs-row-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; }
-      .rs-row-main strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 500; line-height: 1.5; }
-      .rs-row-main small { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 1.5; }
-      .rs-stale { border: 1px dashed var(--dsw-alias-label-error); margin-bottom: 4px; }
-      .rs-stale .rs-row-main { align-items: flex-start; flex-direction: column; gap: 2px; }
-      .rs-stale .rs-row-main strong { color: var(--dsw-alias-label-error); }
-      .rs-remove { color: var(--dsw-alias-label-error); flex: none; }
-      .rs-footer { border-top: 1px solid var(--dsw-alias-border-l2); display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 0 4px; }
-      .rs-footer .rs-error { margin-right: auto; }
       .rs-save { background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-layer-3); }
+      .rs-footer { border-top: .5px solid var(--dsw-alias-border-l2); display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 0 4px; }
+      .rs-failed { min-width: 0; color: var(--dsw-alias-label-error); flex: 1; margin: 0; font-size: 12px; line-height: 1.5; }
       .rs-discard:disabled, .rs-save:disabled { opacity: .4; cursor: default; }
       .rs-discard:focus-visible, .rs-save:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-      .rs-remove:disabled, .rs-refresh:disabled { opacity: .5; cursor: default; }
     `
 
     function apply(ctx: any): void {

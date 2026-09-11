@@ -1045,17 +1045,32 @@ test('the settings card reads the Host catalog through the remote session namesp
 test('the settings card follows official plugin-card chrome and exposes model routes only', () => {
   for (const file of ['../src/client.ts', '../lib/client.js']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8')
+    // Card shell mirrors PluginCard (ui-settings-plugins): hairline border on
+    // the l4 token, 16px radius, open state on bg-layer-2.
     assert.match(source, /e\('li', \{\s*className: `rs-card/)
-    assert.match(source, /\.rs-card \{[^}]*border:\s*1px solid var\(--dsw-alias-border-l2\)/)
-    assert.match(source, /\.rs-card \{[^}]*border-radius:\s*12px/)
+    assert.match(source, /\.rs-card \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\)/)
+    assert.match(source, /\.rs-card \{[^}]*border-radius:\s*16px/)
     assert.doesNotMatch(source, /\.rs-card \{[^}]*overflow\s*:/)
     assert.doesNotMatch(source, /border-left:\s*3px/)
-    assert.doesNotMatch(source, /['"]⌄['"]/) 
+    assert.doesNotMatch(source, /['"]⌄['"]/)
     assert.match(source, /IconChevronDownOutline14/)
     assert.doesNotMatch(source, /rs-select(?:-chevron)?/)
     assert.doesNotMatch(source, /e\('select'/)
     assert.match(source, /\.rs-model-label \{[^}]*font-weight:\s*500;\s*line-height:\s*1\.5/)
-    assert.match(source, /\.rs-row \{[^}]*min-height:\s*32px;[^}]*padding:\s*2px 8px/)
+    // Model list mirrors SubagentModelSelectionCard: bordered fieldset with
+    // provider groups and a three-column row (checkbox / name+route / action).
+    assert.match(source, /\.rs-models \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\);[^}]*border-radius:\s*8px;[^}]*max-height:\s*280px/)
+    assert.match(source, /\.rs-model \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto;[^}]*padding:\s*6px/)
+    assert.match(source, /\.rs-model-group \+ \.rs-model-group \{[^}]*border-top:\s*\.5px solid var\(--dsw-alias-border-l3\)/)
+    // Removal mirrors the Models settings trash icon button (iconButton danger).
+    assert.match(source, /IconTrashOutline16/)
+    assert.match(source, /\.rs-icon-button \{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*6px/)
+    assert.match(source, /\.rs-icon-button-danger:hover:not\(:disabled\) \{[^}]*color:\s*var\(--dsw-alias-state-error-primary\)/)
+    // No manual "refresh catalog" control remains; failures offer a retry.
+    assert.doesNotMatch(source, /refresh\s*:\s*['"](?:刷新目录|Refresh catalog)['"]/)
+    assert.doesNotMatch(source, /\.rs-refresh/)
+    assert.doesNotMatch(source, /cleanup\s*:\s*['"](?:清理选择|Remove selection)['"]/)
+    assert.match(source, /retry\s*:\s*['"](?:重试|Retry)['"]/)
     assert.match(source, /\.rs-discard:hover:not\(:disabled\) \{[^}]*color:\s*var\(--dsw-alias-label-primary\);[^}]*border-color:\s*var\(--dsw-alias-label-dimmed\)/)
     assert.doesNotMatch(source, /\.rs-discard:hover:not\(:disabled\) \{[^}]*background\s*:/)
     assert.match(source, /\.rs-save \{[^}]*background:\s*var\(--dsw-alias-label-primary\);[^}]*color:\s*var\(--dsw-alias-bg-layer-3\)/)

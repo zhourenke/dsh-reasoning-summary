@@ -70,7 +70,7 @@ const definition = definitions[0]
  * `elements` records every `createElement` call, which is how a test observes
  * what the card would render.
  */
-function makeRequire(icons = { IconChevronDownOutline14: () => ({}) }) {
+function makeRequire(icons = { IconChevronDownOutline14: () => ({}), IconTrashOutline16: () => ({}), Tag: (props) => props?.children ?? null }) {
   const requested = []
   const elements = []
   const require = (id) => {
