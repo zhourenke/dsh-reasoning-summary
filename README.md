@@ -76,7 +76,7 @@ provider 和 model 必须同时匹配；同一个 model 配在另一个 provider
 
 ## 流协议
 
-模型准备调用工具时，必须在第一个工具调用前产生一条字面标签：
+模型准备调用工具时，必须把摘要作为**可见 assistant 文本**输出——也就是 text 通道，而不是只写在推理/思考内容里；只出现在 reasoning/thinking 中的摘要在插件看来是缺失的。标签必须是字面文本，且位于第一个工具调用之前：
 
 ```xml
 <summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
@@ -91,7 +91,7 @@ provider 和 model 必须同时匹配；同一个 model 配在另一个 provider
 Read src/index.ts; confirmed the parser location; next update the nearest-pair regression.
 ```
 
-若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本并把它作为 `inferred` 摘要保存；这防止信息丢失，也不会在 GUI 中显示零散进度。后续模型会以 `[Action summary: inferred]` 识别该回退。既无完整标签也无可用文本时，relay 使用 `[Action summary: missing]`；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
+若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本并把它作为 `inferred` 摘要保存；这防止信息丢失，也不会在 GUI 中显示零散进度。后续模型会以 `[Action summary: inferred]` 识别该回退。既无完整标签也无可用文本时，relay 使用 `[Action summary: missing]`，其中 reasoning/thinking 内容一律不计为可用文本；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
 
 ```text
 Summary unavailable: the model did not provide a complete summary.

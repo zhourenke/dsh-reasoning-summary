@@ -273,7 +273,8 @@ test('the system prompt is present only for the selected exact route', async () 
   const selected = { options: { provider: 'cotton-codex', model: 'gpt-5.6-luna' } }
   const other = { options: { provider: 'cotton', model: 'gpt-5.6-luna' } }
   assert.match(section.text({ agent: selected }), /Tool-step communication protocol/)
-  assert.match(section.text({ agent: selected }), /exactly one literal XML-style summary tag immediately before the first tool call/)
+  assert.match(section.text({ agent: selected }), /exactly one literal XML-style summary tag as visible text immediately before the first tool call/)
+  assert.match(section.text({ agent: selected }), /reasoning-only summary is treated as missing/)
   assert.match(section.text({ agent: selected }), /emit no ordinary assistant prose outside that tag/)
   assert.match(section.text({ agent: selected }), /specific and actionable/)
   assert.equal(section.text({ agent: other }), '')
