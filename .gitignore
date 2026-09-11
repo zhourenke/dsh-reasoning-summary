@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.pnpm-store/
+*.tgz
+.tmp-*/
+pnpm-debug.log*
+
+# `lib/` and `lib/types/` are deliberately NOT ignored.
+#
+# This package is distributed through git (route A in PLUGIN_RELEASE_GUIDE.md):
+# `dsh plugin add "github:..."` installs only the files git tracks, and the
+# install performs no build step, so the compiled entry points and their type
+# declarations must be committed. Ignoring `lib/types/` alone would create a
+# half-released package that runs but hands TypeScript consumers no types.
+.DS_Store
+Thumbs.db
+*.log

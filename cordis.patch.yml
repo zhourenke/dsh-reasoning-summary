@@ -1,0 +1,3 @@
+- insert:
+    - id: reasoning-summary
+      name: '@zhourenke/dsh-reasoning-summary'
