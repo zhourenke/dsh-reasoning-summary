@@ -94,7 +94,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本并把它作为 `inferred` 摘要保存；这防止信息丢失，也不会在 GUI 中显示零散进度。后续模型会以 `[Action summary: inferred]` 识别该回退。既无完整标签也无可用文本时，relay 使用 `[Action summary: missing]`，其中 reasoning/thinking 内容一律不计为可用文本；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
 
 ```text
-Summary unavailable: the model did not provide a complete summary.
+Missing action summary: the previous tool step emitted no <summary> tag as visible text. Before your next tool call, emit the summary as visible text inside a literal <summary>...</summary> tag.
 
 Summary incomplete: the response ended before the closing tag.
 ```

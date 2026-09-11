@@ -94,7 +94,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 If a tool step has no complete tag but does contain ordinary execution prose, the plugin hides that prose and saves it as an `inferred` summary. This retains useful details without rendering a disconnected progress message, and later models see `[Action summary: inferred]`. If it has neither a complete tag nor usable text, the relay uses `[Action summary: missing]`, and reasoning/thinking content is never counted as usable text; when a non-failed stream ends before a closing tag, its received content uses `[Action summary: partial]` and retains these notices:
 
 ```text
-Summary unavailable: the model did not provide a complete summary.
+Missing action summary: the previous tool step emitted no <summary> tag as visible text. Before your next tool call, emit the summary as visible text inside a literal <summary>...</summary> tag.
 
 Summary incomplete: the response ended before the closing tag.
 ```

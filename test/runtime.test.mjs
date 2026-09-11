@@ -1237,7 +1237,15 @@ test('partial and missing tool summaries retain only compact degraded-status hea
 
   const relays = relayMessages(agent.session)
   assert.deepEqual(relays.map((relay) => relay.content[0].text), cases.map((entry) => entry.expected))
-  for (const relay of relays) assert.doesNotMatch(relay.content[0].text, /<summary|source=|turn=|step=|Reasoning summary history/)
+  for (const relay of relays) {
+    const text = relay.content[0].text
+    // Degraded relays stay compact: no provenance metadata and no copy of any
+    // model-supplied tag or content. The only literal tag permitted is the
+    // intentional <summary>...</summary> template embedded in MISSING_TEXT.
+    assert.doesNotMatch(text, /source=|turn=|step=|Reasoning summary history/)
+    const templateTags = (MISSING_TEXT.match(/<summary/g) ?? []).length
+    assert.equal((text.match(/<summary/g) ?? []).length, text.includes(MISSING_TEXT) ? templateTags : 0)
+  }
 })
 
 test('a late summary and all tool-step prose are hidden without reordering provider blocks', async () => {

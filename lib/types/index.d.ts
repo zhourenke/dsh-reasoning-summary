@@ -27,7 +27,7 @@ export interface ReasoningSummaryConfig {
     models: ModelSelection[];
 }
 export declare const Config: ReturnType<typeof z.any>;
-declare const MISSING_TEXT = "Summary unavailable: the model did not provide a complete summary.";
+declare const MISSING_TEXT = "Missing action summary: the previous tool step emitted no <summary> tag as visible text. Before your next tool call, emit the summary as visible text inside a literal <summary>...</summary> tag.";
 declare const PARTIAL_TEXT = "Summary incomplete: the response ended before the closing tag.";
 interface SummaryInfo {
     status: 'complete' | 'partial' | 'missing' | 'inferred';
