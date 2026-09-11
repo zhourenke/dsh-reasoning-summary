@@ -745,6 +745,9 @@ test('a reasoning-only first step steers a bounded internal continuation', async
   assert.equal(harness.steered.length, 1)
   const continuation = harness.steered[0]
   assert.equal(continuation.role, 'user')
+  // 'plugin', never 'user' — a user-sourced message would clear
+  // dsh-repeat-tool-reminder's repeat chain; see the note on `relay.source.kind`
+  // later in this file.
   assert.equal(continuation.source.kind, 'plugin')
   assert.equal(continuation.source.form, 'notice')
   assert.ok(continuation.content[0].text.trim().length > 0)
@@ -1125,6 +1128,16 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.equal(harness.injected.length, 1)
   const relay = harness.injected[0]
   assert.equal(relay.role, 'user')
+  // `source.kind` must stay 'plugin': this is a cross-plugin contract, not
+  // cosmetics. dsh-repeat-tool-reminder clears its per-agent repeat chain on
+  // `agent/pre-step` when any inbox message satisfies
+  // `message.source.kind === 'user'` (dsh-repeat-tool-reminder/lib/index.js:1510),
+  // so a relay or notice claiming to be a user message would silently reset the
+  // 3/5/8-repeat reminders for the rest of the session. The `role: 'user'` above
+  // is the LLM role and is unrelated — `createUserMessage` spreads the caller's
+  // input and forces only `role` (dsh-llm/lib/types/message.js:45), so the
+  // source passed here survives verbatim. See the notice assertion earlier in
+  // this file for the same invariant.
   assert.equal(relay.source.kind, 'plugin')
   assert.equal(relay.source.plugin, 'reasoning-summary')
   assert.equal(relay.source.form, 'relay')
