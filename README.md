@@ -139,6 +139,19 @@ pnpm test
 
 当前 `pnpm test` 通过 51 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/inferred/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器，以及客户端只经 `remote.session` 命名空间读取宿主模型目录。
 
+### 产物提交纪律
+
+本包走 git 分发：`dsh plugin add` 只安装 git 跟踪的文件，且安装过程不执行任何构建步骤。因此 `lib/` 的四个产物必须一并提交——`lib/index.js`、`lib/client.js`、`lib/types/index.d.ts`、`lib/types/client.d.ts`；只提交 `.js` 而漏掉 `lib/types/` 会造成「装得上但没有类型声明」的半发布状态。同时**不要**添加 `prepare` 脚本：pnpm 默认拦截依赖的构建脚本，加它会把手动安装变成「先手改 profile 的 `allowBuilds` 再重跑」。
+
+改动 `src/` 后的固定流程：
+
+```powershell
+pnpm run build
+git status --porcelain   # 必须为空；有输出说明产物没跟上源码
+```
+
+Host 半边与 Browser 半边分别使用一份配置：`tsconfig.json` 面向 Node（`lib: ["ES2022"]`、`types: ["node"]`，不含 DOM），`tsconfig.client.json` 面向浏览器（`lib: ["ES2022", "DOM"]`、`types: []`，`require` 由 ModuleLoader 的工厂参数注入）。分开配置的作用是让 `window`、`document` 这类浏览器全局量不会误入 Host 代码。
+
 ## 许可证
 
 MIT

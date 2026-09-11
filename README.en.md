@@ -139,6 +139,19 @@ pnpm test
 
 `pnpm test` currently passes 51 tests covering configuration normalization, exact route matching, complete cross-route history visibility, the A/B/C/D route sequence, settings disable/re-enable behavior, completion of an admitted step after a mid-stream switch, relay and continuation timing, same-session session-title and different-signal auxiliary-stream isolation, tool-result deduplication, compact complete/inferred/partial/missing relay headings, ordinary and failed tool-step text suppression, nearest-neighbor tag pairing, byte-preserved literal markup in no-tool final answers, provider block ordering, the prepared-call defensive fallback, the absence of a global client chat-row filter, and the client reading the host catalog only through the `remote.session` namespace.
 
+### Build-output discipline
+
+This package is distributed through git: `dsh plugin add` installs only the files git tracks and performs no build step. All four `lib/` artifacts must therefore be committed — `lib/index.js`, `lib/client.js`, `lib/types/index.d.ts`, and `lib/types/client.d.ts`. Committing the `.js` files while leaving `lib/types/` out produces a half-released package that runs but hands TypeScript consumers no declarations. Do **not** add a `prepare` script either: pnpm blocks dependency build scripts by default, and the hook would turn installation into a manual `allowBuilds` step.
+
+The fixed sequence after editing `src/`:
+
+```powershell
+pnpm run build
+git status --porcelain   # must be empty; output means the artifacts lag the source
+```
+
+The Host and Browser halves compile from separate configurations: `tsconfig.json` targets Node (`lib: ["ES2022"]`, `types: ["node"]`, no DOM), while `tsconfig.client.json` targets the browser (`lib: ["ES2022", "DOM"]`, `types: []`, with `require` injected by the ModuleLoader factory parameter). Keeping them apart is what prevents browser globals such as `window` and `document` from leaking into Host code.
+
 ## License
 
 MIT
