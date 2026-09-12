@@ -131,6 +131,12 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 宿主 `routeKey(provider, model)` 与客户端 `keyOf({ provider, model })` 都用 `\u0000` 拼接：`provider` 与 `model` 都可能含 `/`、`-` 这类字符，用可打印分隔符会出现"两个不同的路由拼出同一个键"。两份实现必须保持一致，否则卡片勾选的路由与宿主匹配的路由会错位。
 
+### 13. 输出被缓冲成"伪非流式"，这是换稳定性与准确性付出的代价
+
+`llm/stream` 的每个 chunk 都先进 `state.deferred`，直到步骤结束才由 `finishState` 一次性 `yield` 出去。缓冲换来两件做不到就要出错的事：**标签配对要在整段文本上做最近邻判断**（边流边判会在标签跨 chunk 时误判），以及**界面流的过滤必须在判定完成之后**（否则漏写标签的模型会把内部进度直接喷到界面上）。代价是被选中路由的回复不再逐字流式，用户感知为"伪非流式"——README 因此把它写在开头，作为安装前的衡量项。
+
+**不要为了"恢复流式输出"把缓冲拆掉**：先确认上面两个前提能同时满足，再谈改动。
+
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
