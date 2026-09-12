@@ -1165,7 +1165,9 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.equal(relay.source.kind, 'plugin')
   assert.equal(relay.source.plugin, 'reasoning-summary')
   assert.equal(relay.source.form, 'relay')
-  assert.equal(relay.content[0].text, '[Action summary]\ninspected the workspace\nNext, call the tool.')
+  // The relay carries only the tag content; the natural prose after the tag
+  // is suppressed tool-step text and is never merged into the summary.
+  assert.equal(relay.content[0].text, '[Action summary]\ninspected the workspace')
   assert.doesNotMatch(relay.content[0].text, /<summary|source=|turn=|step=|Reasoning summary history/)
   assert.equal(relayEvents(agent.session).length, 0)
 
@@ -1180,7 +1182,7 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.equal(relayEvents(agent.session).length, 1)
 })
 
-test('untagged tool-step prose is hidden and retained as an inferred relay summary', async () => {
+test('untagged tool-step prose is hidden and reports missing instead of inferring', async () => {
   const harness = makeHarness({
     models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
   })
@@ -1188,7 +1190,7 @@ test('untagged tool-step prose is hidden and retained as an inferred relay summa
   const preStep = harness.listeners.get('agent/pre-step')
   const stream = harness.listeners.get('llm/stream')
   const toolResult = harness.listeners.get('tools/result')
-  const callId = 'call-inferred'
+  const callId = 'call-untagged'
   await preStep({ agent, turn: 8, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
   const result = []
   for await (const chunk of stream(mainStreamOptions(agent), () => streamOf([
@@ -1209,11 +1211,17 @@ test('untagged tool-step prose is hidden and retained as an inferred relay summa
   await flushMicrotasks()
 
   const relay = relayMessages(agent.session)[0]
+  // Untagged visible prose is never promoted to a summary: the relay is the
+  // missing reminder, not the model's own words.
   assert.equal(
     relay.content[0].text,
-    '[Action summary: inferred]\nRead src/index.ts, confirmed the parser location, and will update the nearest-pair regression.',
+    `[Action summary: missing]\n${MISSING_TEXT}`,
   )
-  assert.doesNotMatch(relay.content[0].text, /<summary|source=|turn=|step=|Reasoning summary history/)
+  assert.doesNotMatch(relay.content[0].text, /source=|turn=|step=|Reasoning summary history/)
+  // The only literal tag permitted is the intentional <summary>...</summary>
+  // template embedded in MISSING_TEXT; the model's own prose and tags are gone.
+  const templateTags = (MISSING_TEXT.match(/<summary/g) ?? []).length
+  assert.equal((relay.content[0].text.match(/<summary/g) ?? []).length, templateTags)
 })
 
 test('partial and missing tool summaries retain only compact degraded-status headers', async () => {

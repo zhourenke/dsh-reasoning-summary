@@ -30,7 +30,7 @@ export declare const Config: ReturnType<typeof z.any>;
 declare const MISSING_TEXT = "Missing action summary: the previous tool step's summary was not received as visible text \u2014 summaries written only into the reasoning/thinking channel are never read. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.";
 declare const PARTIAL_TEXT = "Summary incomplete: the response ended before the closing tag.";
 interface SummaryInfo {
-    status: 'complete' | 'partial' | 'missing' | 'inferred';
+    status: 'complete' | 'partial' | 'missing';
     content: string;
 }
 declare function routeKey(provider: unknown, model: unknown): string;
@@ -46,13 +46,13 @@ declare function inspectSummary(text: string): {
     info: 'complete' | 'partial';
     content: string;
 } | undefined;
-declare function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing' | 'inferred'): string;
+declare function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing'): string;
 /**
  * Normalize model-emitted summary markup in pure text-block form. The
  * authoritative input tag is removed from the returned block and represented
  * by a compact action-summary relay; direct callers retain later literal tags.
  * Tool-step finalization applies the stronger UI policy by hiding every text
- * block and stripping later tags from inferred relay details.
+ * block; only an explicit tag may supply relay content.
  *
  * `turn` and `step` remain part of the exported helper's established call
  * shape, although provenance no longer repeats those coordinates in text.

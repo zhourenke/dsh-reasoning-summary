@@ -70,7 +70,7 @@ const SUMMARY_OPEN = /<summary\b[^>]*>/gi
 const SUMMARY_CLOSE = /<\/summary\s*>/gi
 
 interface SummaryInfo {
-  status: 'complete' | 'partial' | 'missing' | 'inferred'
+  status: 'complete' | 'partial' | 'missing'
   content: string
 }
 
@@ -188,7 +188,7 @@ function inspectSummary(text: string): {
   }
 }
 
-function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing' | 'inferred'): string {
+function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing'): string {
   const trimmed = content.trim()
   if (status === 'missing') return MISSING_TEXT
   if (status === 'partial') {
@@ -200,7 +200,7 @@ function normalizeSummaryContent(content: string, status: 'complete' | 'partial'
   return trimmed
 }
 
-function makeInfo(status: 'complete' | 'partial' | 'missing' | 'inferred', content: string): SummaryInfo {
+function makeInfo(status: 'complete' | 'partial' | 'missing', content: string): SummaryInfo {
   return {
     status,
     content: normalizeSummaryContent(content, status),
@@ -248,7 +248,7 @@ function removeSummaryMarkup(text: string, summary: NonNullable<ReturnType<typeo
  * authoritative input tag is removed from the returned block and represented
  * by a compact action-summary relay; direct callers retain later literal tags.
  * Tool-step finalization applies the stronger UI policy by hiding every text
- * block and stripping later tags from inferred relay details.
+ * block; only an explicit tag may supply relay content.
  *
  * `turn` and `step` remain part of the exported helper's established call
  * shape, although provenance no longer repeats those coordinates in text.
@@ -405,23 +405,13 @@ function hasText(texts: readonly string[]): boolean {
 }
 
 /**
- * Tool-step prose is execution detail, not a user-facing answer. Keep it as a
- * fallback source for the durable action record, then suppress it from the
- * assistant stream below so a model cannot leak an uncontextualized progress
- * report merely by omitting the protocol tag.
+ * Tool-step prose is execution detail, not a user-facing answer. Every text
+ * block of an admitted tool step is suppressed from the assistant stream
+ * below, so a model cannot leak an uncontextualized progress report by
+ * omitting the protocol tag. Suppressed prose is never repurposed as a
+ * summary: a step without a usable `<summary>` tag is `missing`, and the
+ * relay carries the standard reminder instead of the model's own words.
  */
-function summaryDetails(texts: readonly string[]): string {
-  return texts
-    .map((text) => text
-      // The authoritative pair was removed earlier. Strip later accidental or
-      // duplicate pairs too, so only ordinary execution detail is merged into
-      // the durable summary.
-      .replace(/<summary\b[^>]*>[\s\S]*?<\/summary\s*>/gi, '')
-      .replace(/<\/?summary\b[^>]*>/gi, '')
-      .trim())
-    .filter((text) => text !== '')
-    .join('\n')
-}
 
 function summaryBaseContent(summary: SummaryInfo | undefined): string {
   if (!summary || summary.status === 'missing') return ''
@@ -429,15 +419,6 @@ function summaryBaseContent(summary: SummaryInfo | undefined): string {
   return summary.status === 'partial' && content.endsWith(PARTIAL_TEXT)
     ? content.slice(0, -PARTIAL_TEXT.length).trim()
     : content
-}
-
-function mergeSummaryDetails(summary: SummaryInfo | undefined, details: string): string {
-  const primary = summaryBaseContent(summary)
-  if (!primary) return details
-  if (!details || primary === details) return primary
-  if (details.includes(primary)) return details
-  if (primary.includes(details)) return primary
-  return `${primary}\n${details}`
 }
 
 type AssistantBlockLike = { readonly type?: string; readonly text?: unknown }
@@ -651,23 +632,24 @@ function finishState(state: StepState, partial: boolean, terminal: boolean): Str
   indexes.forEach((index, position) => normalizedByIndex.set(index, normalized.texts[position]))
 
   // A tool step is an execution step, not a user-facing answer. Keep all of
-  // its ordinary prose in the durable action record, but never expose it as an
-  // intermittent assistant message. The explicit summary is preferred; if it
-  // is absent, the withheld prose becomes an inferred summary instead of being
-  // lost or leaking an uncontextualized progress report.
+  // its ordinary prose out of the assistant stream: the explicit summary is
+  // the only action record. A step without a usable tag is `missing`, never
+  // `inferred` from withheld prose, so the next step sees the standard
+  // reminder instead of the model's own (often thinking-like) words.
   for (const index of indexes) normalizedByIndex.set(index, '')
   const output = replaceTextChunks(deferred, normalizedByIndex)
 
-  const details = summaryDetails(normalized.texts)
   const extracted = normalized.summary
   const extractedContent = summaryBaseContent(extracted)
   let summary: SummaryInfo
-  if (extracted && extracted.status !== 'missing' && (extractedContent || details)) {
-    const status = extracted.status === 'complete' && !extractedContent ? 'inferred' : extracted.status
-    summary = makeInfo(status, mergeSummaryDetails(extracted, details))
-  } else if (details) {
-    summary = makeInfo(partial ? 'partial' : 'inferred', details)
+  if (extracted && extracted.status !== 'missing' && extractedContent) {
+    // A usable tag wins: complete pairs use their content; a forced/partial
+    // stream keeps the received content with the incomplete notice.
+    summary = makeInfo(extracted.status, extractedContent)
   } else {
+    // No usable tag. A step that ended mid-stream stays `partial` so the
+    // incomplete notice explains why; anything else is `missing` regardless
+    // of how much visible prose the model wrote outside the tag.
     const status = partial || extracted?.status === 'partial' ? 'partial' : 'missing'
     summary = makeInfo(status, '')
   }

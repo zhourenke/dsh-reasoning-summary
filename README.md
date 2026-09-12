@@ -35,7 +35,7 @@
 - 为精确选中的路由注入英文系统提示；
 - 严格匹配完整的 `provider + model`；
 - 固定在工具调用前生成一条具体、可执行的摘要；
-- complete、inferred、missing 和 partial 摘要规范化；
+- complete、partial 和 missing 摘要规范化；
 - 按 Agent、按步骤维护流状态，并在 DSH 的正常 `llm/stream` waterfall 中处理 prepared call；
 - 从 assistant UI 流中移除工具步骤的全部 text block，同时将可用执行细节保存到摘要 relay；无工具的最终答复仍按原样保留；
 - 在所有根工具调用的 durable `tool/result` 提交后，将摘要 relay 注入下一步骤；
@@ -91,7 +91,7 @@ provider 和 model 必须同时匹配；同一个 model 配在另一个 provider
 Read src/index.ts; confirmed the parser location; next update the nearest-pair regression.
 ```
 
-若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本并把它作为 `inferred` 摘要保存；这防止信息丢失，也不会在 GUI 中显示零散进度。后续模型会以 `[Action summary: inferred]` 识别该回退。既无完整标签也无可用文本时，relay 使用 `[Action summary: missing]`，其中 reasoning/thinking 内容一律不计为可用文本；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
+若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本，但**不会**把它推测成摘要：没有可用 `<summary>` 标签的步骤一律使用 `[Action summary: missing]`，relay 附上提醒，要求模型在可见文本中重新输出字面标签——这样既防止 GUI 显示零散进度，也不会把模型自带的思考摘要误当成行动总结。reasoning/thinking 内容一律不计为可用文本；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
 
 ```text
 Missing action summary: the previous tool step's summary was not received as visible text — summaries written only into the reasoning/thinking channel are never read. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.
@@ -118,7 +118,7 @@ Summary incomplete: the response ended before the closing tag.
 Read src/index.ts; confirmed the parser location; next update the nearest-pair regression.
 ```
 
-只有回退或不完整状态才在标题中标明 `inferred`、`partial` 或 `missing`。插件身份、来源 form、provider/model、turn/step 与 XML 包络不再重复写入正文：DSH 的 `source` 仍在 durable message 上保留 provenance，而正文专门保留下一步需要的行动事实。已有 session 中的旧 relay 会继续作为普通历史传递，本插件不会自动改写它们。
+只有不完整或缺失状态才在标题中标明 `partial` 或 `missing`。插件身份、来源 form、provider/model、turn/step 与 XML 包络不再重复写入正文：DSH 的 `source` 仍在 durable message 上保留 provenance，而正文专门保留下一步需要的行动事实。已有 session 中的旧 relay 会继续作为普通历史传递，本插件不会自动改写它们。
 
 工具循环继续时，插件等待所有根工具调用的 durable `tool/result` 事件提交，再通过 Agent inbox 排队 relay；下一步骤会消费它一次并把它写入 durable session。工具调用导致 turn 结束时，插件也把 relay 直接以 `surfaceOp: 'append'` 追加到 durable session。两种 relay 都保留在正常 session history 中，任何后续 provider/model 都可从 `Session.deriveMessages()` 读取；没有按来源路由的隐藏、replacement 或二次遮蔽。
 
@@ -137,7 +137,7 @@ pnpm run build
 pnpm test
 ```
 
-当前 `pnpm test` 通过 64 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/inferred/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器、客户端只经 `remote.session` 命名空间读取宿主模型目录，以及一条**跨插件契约**：注入的消息不会重置 `dsh-repeat-tool-reminder` 的重复计数。其中 `test/client.test.mjs` 会真正执行 `lib/client.js`：注入 `window.__ModuleLoader__` 后捕获注册定义、以桩 `require` 调用工厂、再以模拟 ctx 调用 `apply`，从而验证插槽占用、样式注入，以及三条模型目录解析路径（`ctx.get('remote.session')`、`ctx.get('remote')`、`ctx.remote.session`）。该文件同时把实测到的宿主契约写进桩与注释（`settings.plugin.item` 是宿主不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染），并实际挂载一次卡片元素，确认注入面被转交给组件、未就绪时不产出任何元素。
+当前 `pnpm test` 通过 64 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器、客户端只经 `remote.session` 命名空间读取宿主模型目录，以及一条**跨插件契约**：注入的消息不会重置 `dsh-repeat-tool-reminder` 的重复计数。其中 `test/client.test.mjs` 会真正执行 `lib/client.js`：注入 `window.__ModuleLoader__` 后捕获注册定义、以桩 `require` 调用工厂、再以模拟 ctx 调用 `apply`，从而验证插槽占用、样式注入，以及三条模型目录解析路径（`ctx.get('remote.session')`、`ctx.get('remote')`、`ctx.remote.session`）。该文件同时把实测到的宿主契约写进桩与注释（`settings.plugin.item` 是宿主不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染），并实际挂载一次卡片元素，确认注入面被转交给组件、未就绪时不产出任何元素。
 
 那条跨插件契约用**真实的** `dsh-repeat-tool-reminder` 代码验证（该守卫只注册两个 handler、不依赖其它服务，所以测试能用两行 `ctx.on` 把它装进同一进程），并配了一条反向对照：同样大小的 pre-step 批次里换成一条 `source.kind === 'user'` 的消息时，链确实会被清除——否则主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的唯一原因：**本包从不 import 它，只有测试加载它**，请勿把它当作未使用的残留删除。
 
