@@ -101,7 +101,7 @@ Summary incomplete: the response ended before the closing tag; only a fully clos
 
 A final natural-language answer does not require a summary and never creates a relay. A no-tool answer completely bypasses summary parsing, tag removal, and normalization; even literal `<summary>...</summary>` markup remains byte-for-byte in every text block.
 
-In the installed DSH `0.1.5-rc.1`, `PreparedLlmCall.stream()` enters the same `llm/stream` waterfall, so ordinary summary normalization covers prepared-call paths. The plugin handles only the ordinary Agent Loop request with no `purpose` and confirms ownership with the current step's cancellation signal; auxiliary calls such as session-title and compaction may reuse the same `sessionId` but never enter summary state. The marker set behind `dsh-llm`'s own `isAgentLoopRequest()` is module-local, and a profile plugin can resolve a different physical copy, which is why this plugin does not depend on it. The durable `assistant/message` check is only a defensive reasoning-only fallback for callers that bypass this stream hook.
+The plugin handles only the main Agent Loop request: auxiliary calls such as session-title generation and compaction may reuse the same `sessionId` but neither enter summary state nor get rewritten by this plugin. In the installed DSH, prepared calls and ordinary calls enter the same `llm/stream` waterfall, so both paths are covered by the same normalization.
 
 ## Summary history and relays
 
@@ -118,41 +118,17 @@ The model-facing body uses a compact form. A complete summary retains only one s
 Read src/index.ts; confirmed the parser location; next update the nearest-pair regression.
 ```
 
-Only incomplete or missing records label `partial` or `missing` in the heading. Plugin identity, source form, provider/model, turn/step, and an XML wrapper no longer repeat in the body: DSH retains provenance in the durable message `source`, while the body holds only action facts needed by the next step. Existing relay text in older sessions remains ordinary history; this plugin does not rewrite it automatically.
+Only incomplete or missing records label `partial` or `missing` in the heading. DSH retains provenance in the durable message `source`, while the body holds only the action facts the next step needs. Existing relay text in older sessions remains ordinary history; this plugin does not rewrite it automatically.
 
-For a continuing tool loop, the plugin waits for every root durable `tool/result`, queues the relay through the Agent inbox, and lets the following step consume and append it to durable session history. When the tool call ends the turn, the plugin also appends the relay directly with `surfaceOp: 'append'`. Both relay forms remain in normal session history, so every later provider/model can read them through `Session.deriveMessages()`; no source-route hiding, replacement, or second masking pass is used.
+For a continuing tool loop, the plugin waits for every root durable `tool/result`, queues the relay through the Agent inbox, and lets the following step consume and append it to durable session history. When the tool call ends the turn, the plugin also appends the relay directly to durable session history. Both relay forms remain in normal session history and are readable by every later provider/model; this plugin neither hides nor rewrites existing history.
 
 When a model emits non-empty reasoning without a tool call or user-facing answer, the plugin uses public `agent.steer()` to continue the same turn. Its model-facing notice begins `[Continue after reasoning-only response]` and no longer nests a normalized summary. Enablement belongs only to the step that creates the notice. A later disabled route can still read an existing notice, but does not create another continuation because of it.
 
-Older plugin versions used replacements to hide turn-ending relays. For sessions that already contain those replacements, removing the new code cannot reverse DSH's append-only surface projection: the original relay may remain in the raw log while the current surface/derived history is shadowed by the old replacement. Restoring such sessions requires an explicit raw-log reconstruction or migration; this package does not rewrite user history automatically. Relays produced by the current implementation use no replacement.
+Older plugin versions used replacements to hide turn-ending relays, and that shadowing is **irreversible**: affected sessions do not recover by upgrading and need an explicit raw-log reconstruction or migration. The current implementation uses no replacement.
 
 ## Development
 
-This package targets DSH `0.1.5-rc.1` and Node.js 20 or newer. Host packages are declared as `peerDependencies`; the `devDependencies` exist only for local typechecking and tests and are pinned to the target host version:
-
-```powershell
-pnpm install
-pnpm run typecheck
-pnpm run build
-pnpm test
-```
-
-`pnpm test` currently passes 64 tests covering configuration normalization, exact route matching, complete cross-route history visibility, the A/B/C/D route sequence, settings disable/re-enable behavior, completion of an admitted step after a mid-stream switch, relay and continuation timing, same-session session-title and different-signal auxiliary-stream isolation, tool-result deduplication, compact complete/partial/missing relay headings, ordinary and failed tool-step text suppression, nearest-neighbor tag pairing, byte-preserved literal markup in no-tool final answers, provider block ordering, the prepared-call defensive fallback, the absence of a global client chat-row filter, the client reading the host catalog only through the `remote.session` namespace, and one **cross-plugin contract**: injected messages do not reset `dsh-repeat-tool-reminder`'s repeat count. `test/client.test.mjs` actually executes `lib/client.js`: it installs a `window.__ModuleLoader__` stub, captures the registration, calls the factory with a stub `require`, and drives `apply` with a simulated context to verify the slot claim, the stylesheet injection, and all three catalog-resolution paths (`ctx.get('remote.session')`, `ctx.get('remote')`, and `ctx.remote.session`). It also encodes the measured host contracts in its stubs and comments (`settings.plugin.item` is a keyed slot whose owner passes no props, the surface and snapshot states of `settingsScope.bind({ namespace })`, and the card rendering nothing while `status !== 'ready'`), and mounts the card element once to prove the injected face reaches the component and that a not-ready snapshot emits no elements.
-
-That cross-plugin contract is verified against the **real** `dsh-repeat-tool-reminder` code — the guard registers two handlers and needs no other service, so two lines of `ctx.on` install it in the same process — together with a reverse control: the same-sized pre-step batch carrying a `source.kind === 'user'` message does clear the chain, without which the main test could pass merely because the clearing branch never runs. That is the only reason `@deepseek-ai/dsh-repeat-tool-reminder` appears in `devDependencies`: **this package never imports it, only the tests load it**, so do not remove it as unused.
-
-### Build-output discipline
-
-This package is distributed through git: `dsh plugin add` installs only the files git tracks and performs no build step. All four `lib/` artifacts must therefore be committed — `lib/index.js`, `lib/client.js`, `lib/types/index.d.ts`, and `lib/types/client.d.ts`. Committing the `.js` files while leaving `lib/types/` out produces a half-released package that runs but hands TypeScript consumers no declarations. Do **not** add a `prepare` script either: pnpm blocks dependency build scripts by default, and the hook would turn installation into a manual `allowBuilds` step.
-
-The fixed sequence after editing `src/`:
-
-```powershell
-pnpm run build
-git status --porcelain   # must be empty; output means the artifacts lag the source
-```
-
-The Host and Browser halves compile from separate configurations: `tsconfig.json` targets Node (`lib: ["ES2022"]`, `types: ["node"]`, no DOM), while `tsconfig.client.json` targets the browser (`lib: ["ES2022", "DOM"]`, `types: []`, with `require` injected by the ModuleLoader factory parameter). Keeping them apart is what prevents browser globals such as `window` and `document` from leaking into Host code.
+Internal implementation, build and test flow, and release discipline live in [DEVELOPMENT.md](DEVELOPMENT.md). Users do not need it.
 
 ## License
 

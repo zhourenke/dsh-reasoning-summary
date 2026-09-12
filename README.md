@@ -101,7 +101,7 @@ Summary incomplete: the response ended before the closing tag; only a fully clos
 
 最终自然语言答复不要求摘要，也不会创建 relay。无工具答复完全跳过摘要解析、标签删除和规范化；即使答复中包含字面 `<summary>...</summary>`，所有 text block 也会原样保留。
 
-在已安装的 DSH `0.1.5-rc.1` 中，`PreparedLlmCall.stream()` 通过同一个 `llm/stream` waterfall，因此普通摘要规范化也覆盖 prepared-call 路径。插件只处理没有 `purpose` 的主 Agent Loop 请求，并用当前步骤的取消信号确认请求归属；标题、压缩等复用同一 `sessionId` 的辅助调用不会进入摘要状态。`dsh-llm` 自带的 `isAgentLoopRequest()` 标记集是模块局部的，profile 插件可能解析到另一份物理副本，因此这里不依赖它。durable `assistant/message` 检查只是对未经过本插件 stream hook 的调用方提供 reasoning-only 防御性回退。
+插件只处理主 Agent Loop 请求：标题生成、压缩等复用同一 `sessionId` 的辅助调用不会进入摘要状态，也不会被本插件改写。在已安装的 DSH 中，prepared call 与普通调用走同一条 `llm/stream` waterfall，因此两条路径都受同一套规范化覆盖。
 
 ## 摘要历史与接力
 
@@ -118,41 +118,17 @@ Summary incomplete: the response ended before the closing tag; only a fully clos
 Read src/index.ts; confirmed the parser location; next update the nearest-pair regression.
 ```
 
-只有不完整或缺失状态才在标题中标明 `partial` 或 `missing`。插件身份、来源 form、provider/model、turn/step 与 XML 包络不再重复写入正文：DSH 的 `source` 仍在 durable message 上保留 provenance，而正文专门保留下一步需要的行动事实。已有 session 中的旧 relay 会继续作为普通历史传递，本插件不会自动改写它们。
+只有不完整或缺失状态才在标题中标明 `partial` 或 `missing`。DSH 的 `source` 仍在 durable message 上保留 provenance，正文则专门保留下一步需要的行动事实。已有 session 中的旧 relay 会继续作为普通历史传递，本插件不会自动改写它们。
 
-工具循环继续时，插件等待所有根工具调用的 durable `tool/result` 事件提交，再通过 Agent inbox 排队 relay；下一步骤会消费它一次并把它写入 durable session。工具调用导致 turn 结束时，插件也把 relay 直接以 `surfaceOp: 'append'` 追加到 durable session。两种 relay 都保留在正常 session history 中，任何后续 provider/model 都可从 `Session.deriveMessages()` 读取；没有按来源路由的隐藏、replacement 或二次遮蔽。
+工具循环继续时，插件等待所有根工具调用的 durable `tool/result` 事件提交，再通过 Agent inbox 排队 relay；下一步骤会消费它一次并把它写入 durable session。工具调用导致 turn 结束时，插件也把 relay 直接追加到 durable session。两种 relay 都保留在正常 session history 中，任何后续 provider/model 都能读到；本插件不隐藏、不改写已有历史。
 
 reasoning-only 响应没有工具调用或用户可见答复时，插件会使用公开 `agent.steer()` 请求同一 turn 继续。notice 的模型可见标题为 `[Continue after reasoning-only response]`，不再嵌套一份规范化摘要。启用状态只属于产生该 notice 的步骤；后续禁用路由仍可读取已存在的 notice，但不会因为它再次创建新的 continuation。
 
-旧版本曾用 replacement 遮蔽结束 turn 的 relay。对于已经写入旧 replacement 的 session，移除新代码不能逆转 DSH append-only surface projection：原始 relay 可能仍在 raw log，但当前 surface/derived history 已经被旧 replacement 隐藏。这类旧 session 如需恢复，需要单独的 raw-log 重建/迁移；本插件不会自动改写用户历史。新代码产生的 relay 不使用 replacement。
+旧版本曾用 replacement 遮蔽结束 turn 的 relay，那种遮蔽**不可逆**：受影响的旧 session 不会因为升级而自动恢复，需要单独的 raw-log 重建或迁移。当前版本不再使用 replacement。
 
-## 开发与验证
+## 开发
 
-本包面向 DSH `0.1.5-rc.1` 和 Node.js 20+。宿主包通过 `peerDependencies` 声明、`devDependencies` 仅用于本地类型检查与测试，且版本与目标宿主保持一致：
-
-```powershell
-pnpm install
-pnpm run typecheck
-pnpm run build
-pnpm test
-```
-
-当前 `pnpm test` 通过 64 项测试，覆盖配置归一化、严格路由匹配、完整历史跨路由可见、A/B/C/D 路由序列、设置禁用/重新启用、已准入步骤在中途切换后的完成、relay 与 continuation 时序、同 session 标题与异信号辅助流隔离、工具结果去重、紧凑 complete/partial/missing relay 标题、正常和失败工具步骤的文本隐藏、最近邻标签配对、无工具最终答复的字面标签原样保留、provider 块顺序、prepared-call 防御性回退、客户端不安装全局聊天行过滤器、客户端只经 `remote.session` 命名空间读取宿主模型目录，以及一条**跨插件契约**：注入的消息不会重置 `dsh-repeat-tool-reminder` 的重复计数。其中 `test/client.test.mjs` 会真正执行 `lib/client.js`：注入 `window.__ModuleLoader__` 后捕获注册定义、以桩 `require` 调用工厂、再以模拟 ctx 调用 `apply`，从而验证插槽占用、样式注入，以及三条模型目录解析路径（`ctx.get('remote.session')`、`ctx.get('remote')`、`ctx.remote.session`）。该文件同时把实测到的宿主契约写进桩与注释（`settings.plugin.item` 是宿主不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染），并实际挂载一次卡片元素，确认注入面被转交给组件、未就绪时不产出任何元素。
-
-那条跨插件契约用**真实的** `dsh-repeat-tool-reminder` 代码验证（该守卫只注册两个 handler、不依赖其它服务，所以测试能用两行 `ctx.on` 把它装进同一进程），并配了一条反向对照：同样大小的 pre-step 批次里换成一条 `source.kind === 'user'` 的消息时，链确实会被清除——否则主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的唯一原因：**本包从不 import 它，只有测试加载它**，请勿把它当作未使用的残留删除。
-
-### 产物提交纪律
-
-本包走 git 分发：`dsh plugin add` 只安装 git 跟踪的文件，且安装过程不执行任何构建步骤。因此 `lib/` 的四个产物必须一并提交——`lib/index.js`、`lib/client.js`、`lib/types/index.d.ts`、`lib/types/client.d.ts`；只提交 `.js` 而漏掉 `lib/types/` 会造成「装得上但没有类型声明」的半发布状态。同时**不要**添加 `prepare` 脚本：pnpm 默认拦截依赖的构建脚本，加它会把手动安装变成「先手改 profile 的 `allowBuilds` 再重跑」。
-
-改动 `src/` 后的固定流程：
-
-```powershell
-pnpm run build
-git status --porcelain   # 必须为空；有输出说明产物没跟上源码
-```
-
-Host 半边与 Browser 半边分别使用一份配置：`tsconfig.json` 面向 Node（`lib: ["ES2022"]`、`types: ["node"]`，不含 DOM），`tsconfig.client.json` 面向浏览器（`lib: ["ES2022", "DOM"]`、`types: []`，`require` 由 ModuleLoader 的工厂参数注入）。分开配置的作用是让 `window`、`document` 这类浏览器全局量不会误入 Host 代码。
+内部实现、构建与测试流程、发布纪律见 [DEVELOPMENT.md](DEVELOPMENT.md)。使用者不需要读它。
 
 ## 许可证
 
