@@ -94,9 +94,9 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 If a tool step has no complete tag but does contain ordinary execution prose, the plugin hides that prose and never promotes it to a summary: any step without a usable `<summary>` tag relays `[Action summary: missing]` with the reminder to re-emit the tag as visible text. This suppresses disconnected progress messages without mistaking the model's own thinking prose for an action summary. reasoning/thinking content is never counted as usable text; when a non-failed stream ends before a closing tag, its received content uses `[Action summary: partial]` and retains these notices:
 
 ```text
-Missing action summary: the previous tool step's summary was not received as visible text — summaries written only into the reasoning/thinking channel are never read, and visible text outside the tag is discarded too. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.
+Missing action summary: no <summary> tag was received in visible text — reasoning/thinking content is never read, and text outside the tag is discarded. Before your next tool call, emit the summary as visible assistant text in a literal <summary>...</summary> tag.
 
-Summary incomplete: the response ended before the closing tag.
+Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
 A final natural-language answer does not require a summary and never creates a relay. A no-tool answer completely bypasses summary parsing, tag removal, and normalization; even literal `<summary>...</summary>` markup remains byte-for-byte in every text block.

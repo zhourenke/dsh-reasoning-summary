@@ -94,9 +94,9 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 若工具步骤没有完整标签但存在普通执行文本，插件会隐藏该文本，但**不会**把它推测成摘要：没有可用 `<summary>` 标签的步骤一律使用 `[Action summary: missing]`，relay 附上提醒，要求模型在可见文本中重新输出字面标签——这样既防止 GUI 显示零散进度，也不会把模型自带的思考摘要误当成行动总结。reasoning/thinking 内容一律不计为可用文本；非失败流在闭合标签前结束时，已收到的内容使用 `[Action summary: partial]`，并保留下列说明：
 
 ```text
-Missing action summary: the previous tool step's summary was not received as visible text — summaries written only into the reasoning/thinking channel are never read, and visible text outside the tag is discarded too. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.
+Missing action summary: no <summary> tag was received in visible text — reasoning/thinking content is never read, and text outside the tag is discarded. Before your next tool call, emit the summary as visible assistant text in a literal <summary>...</summary> tag.
 
-Summary incomplete: the response ended before the closing tag.
+Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
 最终自然语言答复不要求摘要，也不会创建 relay。无工具答复完全跳过摘要解析、标签删除和规范化；即使答复中包含字面 `<summary>...</summary>`，所有 text block 也会原样保留。

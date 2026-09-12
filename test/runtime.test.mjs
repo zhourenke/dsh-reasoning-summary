@@ -1219,6 +1219,10 @@ test('untagged tool-step prose is hidden and reports missing instead of inferrin
     `[Action summary: missing]\n${MISSING_TEXT}`,
   )
   assert.doesNotMatch(relay.content[0].text, /source=|turn=|step=|Reasoning summary history/)
+  // The reminder states both discard rules the model must act on: reasoning
+  // content is unread, and visible text outside the tag is discarded.
+  assert.match(relay.content[0].text, /reasoning\/thinking content is never read/)
+  assert.match(relay.content[0].text, /text outside the tag is discarded/)
   // The only literal tag permitted is the intentional <summary>...</summary>
   // template embedded in MISSING_TEXT; the model's own prose and tags are gone.
   const templateTags = (MISSING_TEXT.match(/<summary/g) ?? []).length
