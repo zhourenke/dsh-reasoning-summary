@@ -27,7 +27,7 @@ export interface ReasoningSummaryConfig {
     models: ModelSelection[];
 }
 export declare const Config: ReturnType<typeof z.any>;
-declare const MISSING_TEXT = "Missing action summary: the previous tool step's summary was not received as visible text \u2014 summaries written only into the reasoning/thinking channel are never read. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.";
+declare const MISSING_TEXT = "Missing action summary: the previous tool step's summary was not received as visible text \u2014 summaries written only into the reasoning/thinking channel are never read, and visible text outside the tag is discarded too. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.";
 declare const PARTIAL_TEXT = "Summary incomplete: the response ended before the closing tag.";
 interface SummaryInfo {
     status: 'complete' | 'partial' | 'missing';
