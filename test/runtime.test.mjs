@@ -755,7 +755,8 @@ test('a reasoning-only first step steers a bounded internal continuation', async
   assert.equal(continuation.source.form, 'notice')
   assert.ok(continuation.content[0].text.trim().length > 0)
   assert.match(continuation.content[0].text, /^\[Continue after reasoning-only response\]\n/)
-  assert.match(continuation.content[0].text, /Continue the task now/)
+  assert.match(continuation.content[0].text, /reasoned without calling a tool or answering the user/)
+  assert.match(continuation.content[0].text, /Act now: either call the appropriate tool or provide the complete user-facing answer\./)
   assert.doesNotMatch(continuation.content[0].text, /Reasoning summary continuation|Normalized summary from the previous response/)
 
   const preStep2 = harness.listeners.get('agent/pre-step')

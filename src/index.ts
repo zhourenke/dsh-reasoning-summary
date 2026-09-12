@@ -445,8 +445,8 @@ function assistantNeedsContinuation(message: AssistantMessageLike): boolean {
 
 const REASONING_CONTINUATION_TEXT = [
   '[Continue after reasoning-only response]',
-  'The previous model response contained reasoning but no tool call or user-facing answer.',
-  'Continue the task now: either call the appropriate tool or provide the user-facing response. Do not stop after reasoning alone.',
+  'The previous response reasoned without calling a tool or answering the user.',
+  'Act now: either call the appropriate tool or provide the complete user-facing answer. Do not stop after reasoning alone.',
 ].join('\n')
 
 function makeReasoningContinuation(): UserMessage {
