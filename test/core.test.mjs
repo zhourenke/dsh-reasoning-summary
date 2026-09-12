@@ -88,7 +88,10 @@ test('an unclosed summary becomes partial while its received prefix stays relay-
   const result = normalizeTextBlocks(['body <summary>still working'], true)
   assert.equal(result.summary.status, 'partial')
   assert.match(result.summary.content, /still working/)
-  assert.match(result.summary.content, new RegExp(PARTIAL_TEXT.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')))
+  assert.ok(
+    result.summary.content.includes(PARTIAL_TEXT),
+    'the partial relay carries the canonical notice verbatim',
+  )
   assert.deepEqual(result.texts, ['body '])
   assert.doesNotMatch(result.texts[0], /<summary/)
 })
