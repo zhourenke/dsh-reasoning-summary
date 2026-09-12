@@ -56,7 +56,24 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **连接点会绕过 profile 里已提升的依赖**：Node 按 realpath 解析后沿工作区路径向上找 `node_modules`，所以插件目录里必须自己 `pnpm install` 一份，否则启动时报 `Cannot find package '@deepseek-ai/schemastery'`。
 
-**两半边的生效方式不同**：宿主半边改完必须**重启 DSH**；浏览器半边改完在重启后还需要**刷新页面**（`lib/client.js` 由 ModuleLoader 在页面加载时取用）。只测宿主半边时不必管卡片，但反过来只刷新页面不会让宿主改动生效。
+**代码改动的生效方式分两半**：宿主半边改完必须**重启 DSH**；浏览器半边改完在重启后还需要**刷新页面**（`lib/client.js` 由 ModuleLoader 在页面加载时取用）。只测宿主半边时不必管卡片，但反过来只刷新页面不会让宿主改动生效。
+
+**配置改动则与重启无关**：`settings.yaml` 与 profile 补丁层都是热重载的，改完立刻生效，两边都不用重启。把这条与上面的代码改动分开记，就不会写出"改配置要重启"这种文档错误。
+
+## 配置落点：`settings.yaml` 与 profile 补丁
+
+同一个 `config` 有两个写入点，README 面向使用者只讲第一个：
+
+| 落点 | 谁写它 | 形态 | 生效 |
+|---|---|---|---|
+| `<harness home>/settings.yaml` | 设置卡片（经由设置服务）或用户手改 | **顶层键 = namespace**：`reasoning-summary:` 下直接放 `models:` | 保存即生效（热重载） |
+| `<profile>/cordis.patch.yml` | 用户或 profile 维护者 | `- id: reasoning-summary` 覆盖条目，其下 `config:` | 保存即生效（补丁层热重载） |
+
+`settings.yaml` 由 `dsh-settings-file` 提供：文件监听默认开启（`config.watch ?? true`，`debounceMs` 默认 100），并且用一条独占操作链把"监听重载"与"文档写入"串行化，因此不会读到写了一半的文件——这也是它能热重载而无需重启的原因。
+
+`cordis.patch.yml` 里**必须用 `- id:` 的覆盖写法，不要写 `- insert:`**：bundle 自带的 patch 已经把这个条目插进去了，再 `insert` 一次不报错，而是多出一个同 id 的实例——插件跑两遍、摘要逻辑算两遍。覆盖只看 `id`，所以 `name` 可省，但一旦写了就必须逐字一致，写错只会静默不生效。
+
+**不要把这个 `id` 当成配置的一部分写进 README 的用户指引**：使用者改的是 `settings.yaml`（或直接点设置卡片），那里没有 `id`、也没有 `name`，只有 namespace 分节。
 
 连接点挂载的插件**无法用 `dsh plugin remove` 卸载**（它不在 profile 的 `dependencies` 里），需要手工删连接点再摘掉 `dsh.profile.bundles` 条目。挂载状态可用 `Get-Item … -Force | Select-Object LinkType, Target` 核对，`Target` 必须等于你正在改的仓库路径（§6.1）。
 
