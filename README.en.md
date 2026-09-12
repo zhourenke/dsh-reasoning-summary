@@ -138,7 +138,7 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 - **Summaries are looked for in visible text only**: one written in reasoning / thinking is treated as missing.
 - **One step honours only the first complete tag**: the nearest complete pair inside one text block wins; if a step writes several summaries, only the first counts.
 - **Continuations are bounded**: at most 3 times in one turn.
-- **Older summaries are merged when compaction runs**: earlier summaries fold into the checkpoint while the most recent ones stay verbatim, so the records do not pile up.
+- **Older summaries are merged when compaction runs**: earlier summaries fold into the checkpoint while the most recent ones stay verbatim, just like native thinking.
 - **Shadowing by older versions is irreversible**: early versions used replacements to hide turn-ending summaries, and upgrading does not undo that — affected sessions need an explicit raw-log reconstruction or migration.
 
 ## Compatibility
