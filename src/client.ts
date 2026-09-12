@@ -60,8 +60,7 @@ window.__ModuleLoader__.load({
       set(field: string, value: unknown): Promise<void>
     }
 
-    type LocaleValue = string | ((n: number) => string)
-    const zh: Record<string, LocaleValue> = {
+    const zh: Record<string, string> = {
       title: '推理摘要',
       description: '为选定模型在调用工具前生成并传递行动摘要。',
       models: '触发模型',
@@ -82,7 +81,7 @@ window.__ModuleLoader__.load({
       collapse: '收起',
       catalogFailed: '模型目录加载失败；已保存的选择不会被自动删除。',
     }
-    const en: Record<string, LocaleValue> = {
+    const en: Record<string, string> = {
       title: 'Reasoning summary',
       description: 'Require and relay an action summary before tool calls on selected models.',
       models: 'Trigger models',
@@ -104,16 +103,6 @@ window.__ModuleLoader__.load({
       catalogFailed: 'The model catalog could not be loaded; saved selections were not removed.',
     }
 
-    function translator(props: any): (key: string, ...args: any[]) => any {
-      if (typeof props?.t === 'function') return props.t
-      const language = typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('zh') ? zh : en
-      return (key: string, ...args: any[]) => {
-        const value: LocaleValue | string = language[key] ?? zh[key] ?? key
-        const text = typeof value === 'function' ? value(Number(args[0] ?? 0)) : value
-        return text.replace(/\{n\}/g, String(args[0] ?? 0))
-      }
-    }
-
     function keyOf(item: Selection): string {
       return `${item.provider}\u0000${item.model}`
     }
@@ -126,13 +115,14 @@ window.__ModuleLoader__.load({
     }
 
     function SummaryCard(props: any): any {
-      const translate = typeof props?.t === 'function' ? props.t : translator(props)
-      const t = (key: string, ...args: any[]) => {
-        const value = typeof props?.t === 'function'
-          ? translate(key, args.length > 0 ? { n: args[0] } : undefined)
-          : translate(key, ...args)
-        return String(value).replace(/\{n\}/g, String(args[0] ?? 0))
-      }
+      // The slot render closure always injects the locale-bound translator, so
+      // the card reads `props.t` directly. The host contract is
+      // `t(key, params?)`; `{n}` is substituted again here because the bound
+      // translator may hand back the raw dictionary entry.
+      const translate = props.t as (key: string, params?: { n?: number }) => unknown
+      const t = (key: string, ...args: any[]) => String(
+        translate(key, args.length > 0 ? { n: args[0] } : undefined),
+      ).replace(/\{n\}/g, String(args[0] ?? 0))
       const scope = props.scope as Scope
       const sessionFace = props.sessionFace as () => SessionFace | undefined
       const [revision, setRevision] = useState(0)

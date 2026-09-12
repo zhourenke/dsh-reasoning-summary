@@ -46,21 +46,17 @@ declare function inspectSummary(text: string): {
     info: 'complete' | 'partial';
     content: string;
 } | undefined;
-declare function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing'): string;
 /**
  * Normalize model-emitted summary markup in pure text-block form. The
  * authoritative input tag is removed from the returned block and represented
  * by a compact action-summary relay; direct callers retain later literal tags.
  * Tool-step finalization applies the stronger UI policy by hiding every text
  * block; only an explicit tag may supply relay content.
- *
- * `turn` and `step` remain part of the exported helper's established call
- * shape, although provenance no longer repeats those coordinates in text.
  */
-declare function normalizeTextBlocks(texts: readonly string[], required: boolean, _turn: number, _step: number, forcedStatus?: 'partial'): {
+declare function normalizeTextBlocks(texts: readonly string[], required: boolean, forcedStatus?: 'partial'): {
     texts: string[];
     summary?: SummaryInfo;
 };
 export declare const inject: string[];
 export declare function apply(ctx: Context): void;
-export { MISSING_TEXT, PARTIAL_TEXT, inspectSummary, normalizeSummaryContent, normalizeTextBlocks, routeKey, };
+export { MISSING_TEXT, PARTIAL_TEXT, inspectSummary, normalizeTextBlocks, routeKey, };

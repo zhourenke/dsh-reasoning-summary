@@ -66,8 +66,7 @@ export const Config = configSchema as unknown as ReturnType<typeof z.any>
 
 const MISSING_TEXT = 'Missing action summary: no <summary> tag was received in visible text — reasoning/thinking content is never read, and text outside the tag is discarded. Before your next tool call, emit the summary as visible assistant text in a literal <summary>...</summary> tag.'
 const PARTIAL_TEXT = 'Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.'
-const SUMMARY_OPEN = /<summary\b[^>]*>/gi
-const SUMMARY_CLOSE = /<\/summary\s*>/gi
+const SUMMARY_TAG = /<summary\b[^>]*>|<\/summary\s*>/gi
 
 interface SummaryInfo {
   status: 'complete' | 'partial' | 'missing'
@@ -144,13 +143,18 @@ type SummaryTag = {
 
 function summaryTags(text: string): SummaryTag[] {
   const tags: SummaryTag[] = []
-  for (const match of text.matchAll(SUMMARY_OPEN)) {
-    if (match.index !== undefined) tags.push({ kind: 'open', index: match.index, end: match.index + match[0].length })
+  // A single pass over one alternation keeps the tags in document order, so
+  // the pair scan below never needs to sort them.
+  for (const match of text.matchAll(SUMMARY_TAG)) {
+    if (match.index === undefined) continue
+    const raw = match[0]
+    tags.push({
+      kind: raw.startsWith('</') ? 'close' : 'open',
+      index: match.index,
+      end: match.index + raw.length,
+    })
   }
-  for (const match of text.matchAll(SUMMARY_CLOSE)) {
-    if (match.index !== undefined) tags.push({ kind: 'close', index: match.index, end: match.index + match[0].length })
-  }
-  return tags.sort((left, right) => left.index - right.index)
+  return tags
 }
 
 /**
@@ -178,14 +182,19 @@ function inspectSummary(text: string): {
     }
   }
 
-  const open = [...tags].reverse().find((tag) => tag.kind === 'open')
-  if (!open) return undefined
-  return {
-    start: open.index,
-    end: text.length,
-    info: 'partial',
-    content: text.slice(open.end),
+  // A truncated stream leaves the last opening tag eligible for the partial
+  // status. Scanning backwards finds it without copying the tag list.
+  for (let index = tags.length - 1; index >= 0; index--) {
+    const tag = tags[index]
+    if (tag.kind !== 'open') continue
+    return {
+      start: tag.index,
+      end: text.length,
+      info: 'partial',
+      content: text.slice(tag.end),
+    }
   }
+  return undefined
 }
 
 function normalizeSummaryContent(content: string, status: 'complete' | 'partial' | 'missing'): string {
@@ -249,11 +258,8 @@ function removeSummaryMarkup(text: string, summary: NonNullable<ReturnType<typeo
  * by a compact action-summary relay; direct callers retain later literal tags.
  * Tool-step finalization applies the stronger UI policy by hiding every text
  * block; only an explicit tag may supply relay content.
- *
- * `turn` and `step` remain part of the exported helper's established call
- * shape, although provenance no longer repeats those coordinates in text.
  */
-function normalizeTextBlocks(texts: readonly string[], required: boolean, _turn: number, _step: number, forcedStatus?: 'partial'): { texts: string[]; summary?: SummaryInfo } {
+function normalizeTextBlocks(texts: readonly string[], required: boolean, forcedStatus?: 'partial'): { texts: string[]; summary?: SummaryInfo } {
   const found = findSummary(texts)
   // A model may emit the requested tag even on a step that does not call a
   // tool. If a tag is present, normalize it consistently; only a tag-free
@@ -293,64 +299,31 @@ function textForBlock(chunks: readonly StreamChunk[], index: number): string {
   const end = chunks.find((chunk): chunk is Extract<StreamChunk, { type: 'block-end' }> =>
     chunk.type === 'block-end' && chunk.index === index && chunk.block.type === 'text',
   )
+  // The discriminant check is what narrows `block` to its text shape.
   return end?.block.type === 'text' ? end.block.text : ''
 }
 
-function replaceTextChunks(chunks: readonly StreamChunk[], normalized: ReadonlyMap<number, string>): StreamChunk[] {
+/**
+ * Remove every text block from a tool step's stream. A hidden block emits no
+ * chunks at all — not even its `block-start`/`block-end` frames — because an
+ * empty text block still renders as a residual blank line below reasoning.
+ * Non-text chunks (tool calls, reasoning, usage, finish) pass through in their
+ * original order.
+ */
+function hideToolStepText(chunks: readonly StreamChunk[]): StreamChunk[] {
+  const hidden = new Set(textBlockIndexes(chunks))
   const output: StreamChunk[] = []
-  const emitted = new Set<number>()
-  const omitted = new Set<number>()
   for (const chunk of chunks) {
     if (chunk.type === 'block-start' && chunk.blockType === 'text') {
-      const text = normalized.get(chunk.index)
-      if (text === undefined) {
-        output.push(chunk)
-      } else if (text === '') {
-        // Do not emit an empty text block after removing the hidden summary.
-        // The GUI renders that block as a residual blank line below reasoning.
-        omitted.add(chunk.index)
-      } else if (!emitted.has(chunk.index)) {
-        output.push(chunk)
-        output.push({ type: 'text-delta', index: chunk.index, text })
-        emitted.add(chunk.index)
-      }
-      continue
-    }
-    if (chunk.type === 'text-delta') {
-      if (normalized.has(chunk.index)) {
-        if (omitted.has(chunk.index)) continue
-        // A delta-only stream has no block-start to anchor the replacement. The
-        // replacement is inserted exactly where its first delta occurred.
-        if (!emitted.has(chunk.index)) {
-          const text = normalized.get(chunk.index) ?? ''
-          if (text === '') {
-            omitted.add(chunk.index)
-            continue
-          }
-          output.push({ type: 'text-delta', index: chunk.index, text })
-          emitted.add(chunk.index)
-        }
-      } else {
-        output.push(chunk)
-      }
-      continue
-    }
-    if (chunk.type === 'block-end' && chunk.block.type === 'text') {
-      const text = normalized.get(chunk.index)
-      if (text === undefined) output.push(chunk)
-      else if (text === '') omitted.add(chunk.index)
-      else if (!omitted.has(chunk.index)) output.push({ ...chunk, block: { type: 'text', text } })
-      continue
+      if (hidden.has(chunk.index)) continue
+    } else if (chunk.type === 'text-delta') {
+      if (hidden.has(chunk.index)) continue
+    } else if (chunk.type === 'block-end' && chunk.block.type === 'text') {
+      if (hidden.has(chunk.index)) continue
     }
     output.push(chunk)
   }
   return output
-}
-
-function hideToolStepText(chunks: readonly StreamChunk[]): StreamChunk[] {
-  const normalized = new Map<number, string>()
-  for (const index of textBlockIndexes(chunks)) normalized.set(index, '')
-  return replaceTextChunks(chunks, normalized)
 }
 
 function isToolChunk(chunk: StreamChunk): boolean {
@@ -404,15 +377,6 @@ function hasText(texts: readonly string[]): boolean {
   return texts.some((text) => text.trim() !== '')
 }
 
-/**
- * Tool-step prose is execution detail, not a user-facing answer. Every text
- * block of an admitted tool step is suppressed from the assistant stream
- * below, so a model cannot leak an uncontextualized progress report by
- * omitting the protocol tag. Suppressed prose is never repurposed as a
- * summary: a step without a usable `<summary>` tag is `missing`, and the
- * relay carries the standard reminder instead of the model's own words.
- */
-
 function summaryBaseContent(summary: SummaryInfo | undefined): string {
   if (!summary || summary.status === 'missing') return ''
   const content = summary.content.trim()
@@ -461,8 +425,22 @@ function makeReasoningContinuation(): UserMessage {
   })
 }
 
+/**
+ * The admission gate shared by every relay publication path: the step must
+ * still be admitted, must not have published or queued a relay, must keep its
+ * boundary open unless the caller allows a closed step, and must not be
+ * aborted. Keeping this in one place stops the three call sites from drifting.
+ */
+function canPublish(state: StepState, allowClosedStep: boolean): boolean {
+  return state.active
+    && !state.relayScheduled
+    && !state.relayQueued
+    && (allowClosedStep || state.stepOpen)
+    && !state.signal?.aborted
+}
+
 function injectNextStep(state: StepState, message: UserMessage, allowClosedStep = false): boolean {
-  if (!state.active || state.relayScheduled || state.relayQueued || (!allowClosedStep && !state.stepOpen) || state.signal?.aborted) return false
+  if (!canPublish(state, allowClosedStep)) return false
   state.relayQueued = true
   try {
     // `inject()` writes durable model-facing context. The following pre-step
@@ -479,7 +457,7 @@ function injectNextStep(state: StepState, message: UserMessage, allowClosedStep 
 }
 
 function steerReasoningContinuation(state: StepState, message: UserMessage, allowClosedStep = false): boolean {
-  if (!state.active || state.relayScheduled || state.relayQueued || (!allowClosedStep && !state.stepOpen) || state.signal?.aborted) return false
+  if (!canPublish(state, allowClosedStep)) return false
   state.relayQueued = true
   try {
     // The native stop-boundary hook re-reads nextStep after this call. Steering
@@ -534,7 +512,7 @@ function deferReasoningContinuation(state: StepState): void {
  */
 function appendFinalRelay(state: StepState, allowClosedStep = false): void {
   const message = state.finalRelay
-  if (!state.active || !message || state.relayScheduled || state.relayQueued || (!allowClosedStep && !state.stepOpen) || state.signal?.aborted || state.relayAttempts >= 2) return
+  if (!message || state.relayAttempts >= 2 || !canPublish(state, allowClosedStep)) return
   state.relayQueued = true
   state.relayAttempts++
   try {
@@ -549,21 +527,15 @@ function appendFinalRelay(state: StepState, allowClosedStep = false): void {
   }
 }
 
-function queueFinalRelay(state: StepState): void {
-  if (!state.finalRelay || state.relayScheduled || state.relayQueued) return
-  // The stream is consumed before the core assistant/message append. A
-  // microtask would run before that append, so this synchronous call is the
-  // publication-safe path for terminal tool steps.
-  appendFinalRelay(state)
-}
-
 function continueRelay(state: StepState, allowClosedStep = false): void {
   if (!state.active || !state.finalRelay) return
   injectNextStep(state, state.finalRelay, allowClosedStep)
 }
 
 function queueToolRelay(state: StepState): void {
-  if (!state.active || !state.finalRelay || state.relayScheduled || state.relayQueued || !allToolResultsSettled(state)) return
+  // A closed step boundary is acceptable here: the relay is published from the
+  // post-commit microtask below, which may run after `step/end`.
+  if (!state.finalRelay || !canPublish(state, true) || !allToolResultsSettled(state)) return
   state.relayQueued = true
   // `tools/result` is observed before the core appends tool/result. Its
   // post-commit session/event callback schedules this microtask, so the
@@ -579,24 +551,39 @@ function queueToolRelay(state: StepState): void {
   })
 }
 
+/**
+ * Mutable per-attempt fields in their start state. Step admission and retry
+ * resets share this one list so a newly added field cannot be initialized in
+ * one path and forgotten in the other. `active`, the buffers, and the
+ * immutable identity fields are handled by their respective owners.
+ */
+function attemptDefaults(): Pick<StepState,
+  | 'sawToolCall' | 'sawReasoning' | 'toolResultCount' | 'toolConcluded'
+  | 'finalized' | 'relayQueued' | 'relayScheduled' | 'relayAttempts'
+  | 'continuationPending' | 'continuationBlocked' | 'stepOpen'> {
+  return {
+    sawToolCall: false,
+    sawReasoning: false,
+    toolResultCount: 0,
+    toolConcluded: false,
+    finalized: false,
+    relayQueued: false,
+    relayScheduled: false,
+    relayAttempts: 0,
+    continuationPending: false,
+    continuationBlocked: false,
+    stepOpen: true,
+  }
+}
+
 function resetAttempt(state: StepState): void {
   state.deferred.length = 0
   state.toolIndexes.clear()
   state.toolCallIds.clear()
   state.toolResultIds.clear()
-  state.sawToolCall = false
-  state.sawReasoning = false
-  state.toolResultCount = 0
-  state.toolConcluded = false
-  state.finalized = false
-  state.relayQueued = false
-  state.relayScheduled = false
-  state.relayAttempts = 0
+  Object.assign(state, attemptDefaults())
   state.finalRelay = undefined
   state.continuationMessage = undefined
-  state.continuationPending = false
-  state.continuationBlocked = false
-  state.stepOpen = true
 }
 
 function finishState(state: StepState, partial: boolean, terminal: boolean): StreamChunk[] {
@@ -615,29 +602,23 @@ function finishState(state: StepState, partial: boolean, terminal: boolean): Str
     const needsReasoningContinuation = !terminal
       && state.sawReasoning
       && !hasText(texts)
-    if (needsReasoningContinuation && queueReasoningContinuation(state)) return deferred
+    if (needsReasoningContinuation) queueReasoningContinuation(state)
     return deferred
   }
 
   // Summaries are required only for tool-bearing steps. A partial status is
-  // forced only when such a step ended before its summary could close.
-  const normalized = normalizeTextBlocks(
-    texts,
-    true,
-    state.turn,
-    state.step,
-    partial ? 'partial' : undefined,
-  )
-  const normalizedByIndex = new Map<number, string>()
-  indexes.forEach((index, position) => normalizedByIndex.set(index, normalized.texts[position]))
+  // forced only when such a step ended before its summary could close. Only the
+  // parsed summary is kept: the normalized text form is not needed because the
+  // UI policy below hides every text block of a tool step.
+  const normalized = normalizeTextBlocks(texts, true, partial ? 'partial' : undefined)
 
-  // A tool step is an execution step, not a user-facing answer. Keep all of
-  // its ordinary prose out of the assistant stream: the explicit summary is
-  // the only action record. A step without a usable tag is `missing`, never
-  // `inferred` from withheld prose, so the next step sees the standard
-  // reminder instead of the model's own (often thinking-like) words.
-  for (const index of indexes) normalizedByIndex.set(index, '')
-  const output = replaceTextChunks(deferred, normalizedByIndex)
+  // A tool step is an execution step, not a user-facing answer. Hiding every
+  // text block keeps an admitted step from leaking an uncontextualized
+  // progress report when the model omits the protocol tag: the explicit
+  // summary is the only action record. A step without a usable tag is
+  // `missing`, so the next step receives the standard reminder instead of the
+  // model's own (often thinking-like) prose.
+  const output = hideToolStepText(deferred)
 
   const extracted = normalized.summary
   const extractedContent = summaryBaseContent(extracted)
@@ -657,8 +638,10 @@ function finishState(state: StepState, partial: boolean, terminal: boolean): Str
 
   // Only an enabled tool-bearing step can create a relay. A continuing tool
   // loop sends it to the next step after durable tool results; a tool step that
-  // ends the turn persists it as durable history.
-  if (terminal) queueFinalRelay(state)
+  // ends the turn persists it as durable history. The stream is consumed
+  // before the core appends the durable assistant/message, so the terminal
+  // relay is persisted synchronously rather than from a microtask.
+  if (terminal) appendFinalRelay(state)
   return output
 }
 
@@ -749,7 +732,9 @@ export const inject = ['agents', 'llm', 'settings', 'systemPrompt', 'tools']
 export function apply(ctx: Context): void {
   const settings = ctx.settings
   const agents = ctx.agents
-  let selected = selectedRoutes(undefined)
+  // Empty until the settings service answers; a registration failure disables
+  // the feature outright, so no fallback value is ever read.
+  let selected: ReadonlySet<string> = new Set<string>()
   // The selected route is supplied by DSH's model-selection layer during prompt
   // assembly. Keep only that per-agent admission snapshot; Agent.options is the
   // fallback for callers that invoke pre-step without a preceding assembly.
@@ -784,7 +769,10 @@ export function apply(ctx: Context): void {
   // plugin's section from that authoritative result, so a session whose
   // Agent.options still contains the creation-time default cannot accidentally
   // receive the instruction (or miss it after selecting a configured route).
-  on('system-prompt/assemble', async (assembly: any, assemblyContext: any, next: () => Promise<any>) => {
+  // The incoming assembly payload is unused: the authoritative result is the
+  // `next()` return value, which already carries the model-selection layer's
+  // final variables.
+  on('system-prompt/assemble', async (_assembly: any, assemblyContext: any, next: () => Promise<any>) => {
     const result = await next()
     const agent = assemblyContext?.agent as Agent | undefined
     const route = routeFromValue(result?.variables) ?? (agent === undefined ? undefined : routeKey(agent.options.provider, agent.options.model))
@@ -859,17 +847,7 @@ export function apply(ctx: Context): void {
       toolIndexes: new Set<number>(),
       toolCallIds: new Set<string>(),
       toolResultIds: new Set<string>(),
-      sawToolCall: false,
-      sawReasoning: false,
-      toolResultCount: 0,
-      toolConcluded: false,
-      finalized: false,
-      relayQueued: false,
-      relayScheduled: false,
-      relayAttempts: 0,
-      continuationPending: false,
-      continuationBlocked: false,
-      stepOpen: true,
+      ...attemptDefaults(),
     }
     states.set(payload.agent, state)
     sessionStates.set((payload.agent as Agent).session as object, state)
@@ -995,7 +973,6 @@ export {
   MISSING_TEXT,
   PARTIAL_TEXT,
   inspectSummary,
-  normalizeSummaryContent,
   normalizeTextBlocks,
   routeKey,
 }
