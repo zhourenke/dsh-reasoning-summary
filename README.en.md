@@ -122,7 +122,7 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 
 - This plugin provides no tools, but it **changes what a selected route should emit**: a visible `<summary>…</summary>` before calling a tool. Text that only lives in reasoning / thinking does not count.
 - It does not change the visible scope of session history; every model sees the same history.
-- A summary should be concrete about files / commands / observations and the next action.
+- A summary is concrete about the files / commands / observations and the next action.
 - `[Action summary: missing]` / `[Action summary: partial]` means the previous summary was incomplete; `[Continue after reasoning-only response]` means the last response was reasoning only, with neither an action nor an answer.
 - To tell whether the plugin is active: an **Injected context · reasoning-summary** notice appears in the interface after a tool step.
 

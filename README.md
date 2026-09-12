@@ -122,7 +122,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 - 本插件不提供任何工具，但会**改变被选中路由该输出什么**：调用工具前需要给出可见的 `<summary>…</summary>`，只写在推理 / 思考内容里不算数。
 - 它不改变会话历史的可见范围，所有模型看到的历史是一致的。
-- 摘要要具体到文件 / 命令 / 观察结果与下一步动作。
+- 摘要具体到文件 / 命令 / 观察结果与下一步动作。
 - `[Action summary: missing]` / `[Action summary: partial]` 表示上一条摘要没写全；`[Continue after reasoning-only response]` 表示上一轮只有推理、没有动作也没有答复。
 - 判断插件是否生效：工具步骤后界面上出现 **注入上下文 · reasoning-summary** 提示。
 
