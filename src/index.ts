@@ -64,7 +64,7 @@ const configSchema = z.transform(
 // portable for consumers using a different pnpm layout.
 export const Config = configSchema as unknown as ReturnType<typeof z.any>
 
-const MISSING_TEXT = 'Missing action summary: the previous tool step emitted no <summary> tag as visible text. Before your next tool call, emit the summary as visible text inside a literal <summary>...</summary> tag.'
+const MISSING_TEXT = 'Missing action summary: the previous tool step\'s summary was not received as visible text — summaries written only into the reasoning/thinking channel are never read. Before your next tool call, write the summary again as visible assistant text inside a literal <summary>...</summary> tag.'
 const PARTIAL_TEXT = 'Summary incomplete: the response ended before the closing tag.'
 const SUMMARY_OPEN = /<summary\b[^>]*>/gi
 const SUMMARY_CLOSE = /<\/summary\s*>/gi
