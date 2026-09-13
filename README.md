@@ -95,6 +95,8 @@ You wrote multiple action summaries, but DSH received no tool call — text-form
 Emit a native tool-use block, or stop writing summaries and give the final answer now.
 ```
 
+这条提示排在下一步的 inbox 里：轮次自然结束时会随下一步自动到达模型，无需你干预；若你在空转期间**手动终止**了回答，它会被终止一并丢弃，需要你手动告知模型（比如在下一条消息里点明它把工具调用写成了文本）。
+
 最终的普通答复不要求摘要，也不会产生记录，其中的字面 `<summary>…</summary>` 会原样保留。
 
 ## 摘要去了哪里

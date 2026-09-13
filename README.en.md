@@ -95,6 +95,8 @@ You wrote multiple action summaries, but DSH received no tool call — text-form
 Emit a native tool-use block, or stop writing summaries and give the final answer now.
 ```
 
+The notice waits in the next step's inbox and reaches the model automatically when the turn ends on its own — no action needed. If you interrupt the response manually, the pending notice is discarded with the cancellation, so tell the model yourself (for example, point out in your next message that it wrote tool calls as text).
+
 A final ordinary answer requires no summary and produces no record; literal `<summary>…</summary>` markup in it is preserved as it is.
 
 ## Where the summary goes
