@@ -87,7 +87,7 @@ When a non-failed stream ends before the closing tag, what arrived is treated as
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
-When one output carries **two complete `<summary>` tags but never a tool call**, the plugin judges the step to be spinning: it releases the step's buffered text at once (the UI shows what the model wrote, including malformed tool-call text) and queues the plugin's own notice for the following context — the notice, not any of the model's summaries (unexecuted summaries would only mislead the model):
+When one output carries **two complete `<summary>` tags but still no tool call**, the plugin judges the step to be spinning and immediately releases the step's remaining stream, while queueing the plugin's own notice:
 
 ```text
 [No tool call received]

@@ -87,7 +87,7 @@ Missing action summary: no <summary> tag was received in visible text — reason
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
-当模型在同一次输出里写出了**两个完整的 `<summary>` 标签、却始终没有发出任何工具调用**时，插件判定疑似空转：立刻放行本步已缓冲的文本（界面实时显示模型写了什么，包括写错的工具调用文本），并把插件自己的提示注入后续上下文——注入的是插件提示，不是模型写的任何一条摘要（未实行的摘要只会误导模型）：
+当模型在同一次输出里写出了**两个完整的 `<summary>` 标签、却依然没有发出任何工具调用**时，插件判定疑似空转，此时立刻放行本步后续的流式输出，并注入插件自己的提示：
 
 ```text
 [No tool call received]
