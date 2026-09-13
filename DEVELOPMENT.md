@@ -139,6 +139,18 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **2026-09 追加：缓冲不再"永远等到 finish"。** 实测某个 Codex 系 Provider 组合会把工具调用写成 claude-code 文本语法（`to=... (commentary) json {}`），DSH 不执行，模型于是在同一次输出里反复"思考→写摘要→重写坏调用→再思考"，直到输出预算耗尽（单步 output 可达 1.4–2 万 token、耗时 4–7 分钟，Provider 侧没有第二次请求）。这类自旋步会在同一输出内产生多个完整 `<summary>` 标签却零工具调用。插件据此判定疑似空转（`SPIN_RELEASE_SUMMARIES = 2`，最近邻配对计数）：立即放行本步已缓冲文本（用户可实时看到错误并中断止损），把本轮标记 finalized（避免 finish 再次走 relay/continuation 路径），并向后续上下文注入插件自己的提示（`[No tool call received]`，**不是**模型的未执行摘要）。放行只发生在 `sawToolCall === false` 的步骤，带真实工具调用的步骤完全不受影响；TTL 兜底留作后续，视效果再定。
 
+### 14. 自旋判据只用插件自己的契约，不抓模型的外部特征
+
+第一版方案是检测可见文本里的 `to=functions.pwsh`、`(commentary)`、`json {}` 这类 claude-code 文本工具调用痕迹。它被否掉的原因是**判据的归属**：这些字符串由模型与 Provider 定义，不在插件控制范围内，换模型、换 Provider、换版本就可能变样或消失，而失效是**静默的**——不报错，只是再也匹配不上，插件从"能识别"退化成"从不识别"，没有任何信号提示。
+
+最终判据是"同一次输出里出现两个完整、互不包含的 `<summary>` 标签，且没有任何工具调用"（`countCompleteSummaryPairs` + `SPIN_RELEASE_SUMMARIES`）：`<summary>` 是插件自己要求模型产出的协议信号，模型是谁、坏调用写成什么形式都不影响判据成立，契约在判据就在。**新增任何"识别异常"的判断时，先找插件自身契约里有没有语义等价的信号，没有再看宿主稳定 API 与事件，最后才考虑外部特征**；采用外部特征时必须写明它是针对哪个模型的临时判据。
+
+### 15. `missing` 大多来自机械执行步；用户中断不会丢掉注入的提示
+
+某个 Codex 系 Provider 上的实测（8 个 turn、364 个工具步）：`[Action summary: missing]` 共 110 步（30%），其中 73 步是"有 reasoning 但没写可见摘要"（模型把计划留在思考里），37 步是**纯工具调用步**（`blocks` 只有 `tool-call`，连 reasoning 都没有，典型是连续 `edit` 的机械执行）；纯工具调用步 100% 记为 missing，单个 64 步的 turn 里 missing 占 23 步（36%）。这类步没有新的目标或思路，要求它输出摘要没有信息价值，**因此不增加"连续 missing 升级提醒"之类的机制**；观察指标是 missing 占比与纯工具调用步占比，等模型或 Provider 变化后再复核。
+
+**用户中断的语义与类型注释给人的印象相反。** `inject()` 的实现是 `send(input, "next-step", false)`（进 `next-step` 队列、不唤醒 driver），`cancel(cause, options)` 只在 `!options.keepInbox` 时才 `inbox.clear()`——**丢弃是不传选项时的默认值**，而用户中断路径显式传 `keepInbox: true`（出处：`@deepseek-ai/dsh-agent-loop`、`@deepseek-ai/dsh-api-session-controller`，见指南 §4.11）。因此空转放行注入的 `[No tool call received]` 在用户中断后**仍留在队列里**，用户的下一条消息会唤醒模型并在同一个 pre-step 把它送进上下文（紧跟那条消息）——用户只需随口说一句，不必自己复述细节。凡是准备写进 README 的"用户操作后果"，都必须有实测或实现级调用点作证，不能只凭 `.d.ts` 里 `may` 的措辞推断。
+
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。

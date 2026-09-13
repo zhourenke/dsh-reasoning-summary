@@ -95,7 +95,7 @@ You wrote multiple action summaries, but DSH received no tool call — text-form
 Emit a native tool-use block, or stop writing summaries and give the final answer now.
 ```
 
-The notice waits in the next step's inbox and reaches the model automatically when the turn ends on its own — no action needed. If you interrupt the response manually, the pending notice is discarded with the cancellation, so tell the model yourself (for example, point out in your next message that it wrote tool calls as text).
+The notice waits in the next step's inbox and reaches the model automatically when the turn ends on its own — no action needed. Interrupting the response manually does not lose it either: a user cancellation keeps pending inbox items, so your next message wakes the model and the notice enters the context at that same step boundary, right after your message. After interrupting a spin you only need to say something brief (for example "mind the tool-call format") — the plugin's own precise notice is delivered for you, and you never have to restate the details yourself.
 
 A final ordinary answer requires no summary and produces no record; literal `<summary>…</summary>` markup in it is preserved as it is.
 

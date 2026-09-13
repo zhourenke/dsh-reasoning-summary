@@ -95,7 +95,7 @@ You wrote multiple action summaries, but DSH received no tool call — text-form
 Emit a native tool-use block, or stop writing summaries and give the final answer now.
 ```
 
-这条提示排在下一步的 inbox 里：轮次自然结束时会随下一步自动到达模型，无需你干预；若你在空转期间**手动终止**了回答，它会被终止一并丢弃，需要你手动告知模型（比如在下一条消息里点明它把工具调用写成了文本）。
+这条提示排在下一步的 inbox 里：轮次自然结束时会随下一步自动到达模型，无需你干预；你**手动终止**回答也不会让它丢失——DSH 的用户中断会保留待领取的队列，你随后发出的下一条消息会唤醒模型，提示在同一个步骤边界紧跟那条消息进入上下文。所以中断空转后只需随口说一句（例如「注意工具调用格式」），插件自带的准确提示就会自动送达，不必由你复述细节。
 
 最终的普通答复不要求摘要，也不会产生记录，其中的字面 `<summary>…</summary>` 会原样保留。
 
