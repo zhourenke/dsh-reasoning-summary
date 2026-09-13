@@ -91,7 +91,7 @@ Summary incomplete: the response ended before the closing tag; only a fully clos
 
 ```text
 [No tool call received]
-You wrote two action summaries, but DSH received no tool call to execute — text-form tool invocations such as "to=... json {}" are never executed.
+You wrote multiple action summaries, but DSH received no tool call — text-form tool invocations such as "to=... json {}" are never executed.
 Emit a native tool-use block, or stop writing summaries and give the final answer now.
 ```
 
