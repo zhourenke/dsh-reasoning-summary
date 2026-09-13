@@ -87,6 +87,14 @@ When a non-failed stream ends before the closing tag, what arrived is treated as
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
+When one output carries **two complete `<summary>` tags but never a tool call**, the plugin judges the step to be spinning: it releases the step's buffered text at once (the UI shows what the model wrote, including malformed tool-call text) and queues the plugin's own notice for the following context — the notice, not any of the model's summaries (unexecuted summaries would only mislead the model):
+
+```text
+[No tool call received]
+You wrote two action summaries, but DSH received no tool call to execute — text-form tool invocations such as "to=... json {}" are never executed.
+Emit a native tool-use block, or stop writing summaries and give the final answer now.
+```
+
 A final ordinary answer requires no summary and produces no record; literal `<summary>…</summary>` markup in it is preserved as it is.
 
 ## Where the summary goes
@@ -139,6 +147,7 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 - **One step honours only the first complete tag**: the nearest complete pair inside one text block wins; if a step writes several summaries, only the first counts.
 - **Continuations are bounded**: at most 3 times in one turn.
 - **Older summaries are merged when compaction runs**: earlier summaries fold into the checkpoint while the most recent ones stay verbatim, just like native thinking.
+- **Steps judged to be spinning are released**: when one output carries two complete `<summary>` tags and no tool call, the plugin releases the step's text and queues its own notice instead of hiding it, so the spin can be interrupted early; real tool-call steps are unaffected.
 - **Shadowing by older versions is irreversible**: early versions used replacements to hide turn-ending summaries, and upgrading does not undo that — affected sessions need an explicit raw-log reconstruction or migration.
 
 ## Compatibility

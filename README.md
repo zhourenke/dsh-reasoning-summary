@@ -87,6 +87,14 @@ Missing action summary: no <summary> tag was received in visible text — reason
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
+当模型在同一次输出里写出了**两个完整的 `<summary>` 标签、却始终没有发出任何工具调用**时，插件判定疑似空转：立刻放行本步已缓冲的文本（界面实时显示模型写了什么，包括写错的工具调用文本），并把插件自己的提示注入后续上下文——注入的是插件提示，不是模型写的任何一条摘要（未实行的摘要只会误导模型）：
+
+```text
+[No tool call received]
+You wrote two action summaries, but DSH received no tool call to execute — text-form tool invocations such as "to=... json {}" are never executed.
+Emit a native tool-use block, or stop writing summaries and give the final answer now.
+```
+
 最终的普通答复不要求摘要，也不会产生记录，其中的字面 `<summary>…</summary>` 会原样保留。
 
 ## 摘要去了哪里
@@ -139,6 +147,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 - **一个步骤只认第一个完整标签**：同一文本块内取最近邻的完整配对；写了多个摘要时只有第一个作数。
 - **continuation 有次数上限**：同一 turn 内最多 3 次。
 - **较早的摘要会随压缩被合并**：触发上下文压缩时，较早的摘要并入检查点，最近的仍逐字保留，就像原生思考过程那样。
+- **疑似空转的步骤会被放行**：同一输出出现两个完整 `<summary>` 标签却没有任何工具调用时，插件放行本步文本并注入自己的提示（而不是隐藏），便于及时中断；带真实工具调用的步骤不受影响。
 - **旧版本的遮蔽不可逆**：早期版本用 replacement 遮蔽过结束 turn 的摘要，升级不会自动恢复，受影响的旧会话需要单独的 raw-log 重建或迁移。
 
 ## 兼容性

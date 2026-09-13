@@ -1588,3 +1588,98 @@ test('control: a user-sourced message in that same batch does reset the chain', 
 
   assert.deepEqual(await attemptTool(handlers, agent, 'read_file', { path: 'x' }), [])
 })
+
+test('two complete summaries without a tool call release the step and inject the plugin notice', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness)
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const chunks = [
+    textStart(0),
+    textDelta('<summary>first planned action</summary>', 0),
+    textEnd('<summary>first planned action</summary>', 0),
+    textStart(1),
+    textDelta('<summary>second planned action</summary>', 1),
+    textEnd('<summary>second planned action</summary>', 1),
+    finish(),
+  ]
+  const output = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) output.push(chunk)
+
+  // A released step keeps its passthrough order; text is flushed early rather
+  // than withheld until finish, so the user can see the spin and interrupt.
+  assert.deepEqual(output, chunks)
+  // The plugin's own notice is queued for the next step — never one of the
+  // model's unexecuted summaries.
+  assert.equal(harness.injected.length, 1)
+  const notice = harness.injected[0]
+  assert.equal(notice.source.kind, 'plugin')
+  assert.equal(notice.source.form, 'notice')
+  assert.match(notice.content[0].text, /^\[No tool call received\]\n/)
+  assert.match(notice.content[0].text, /text-form tool invocations such as "to=\.\.\. json \{\}" are never executed/)
+  assert.doesNotMatch(notice.content[0].text, /first planned action|second planned action/)
+  // A released non-tool step produces no action-summary relay.
+  assert.equal(relayEvents(agent.session).length, 0)
+  assert.equal(relayMessages(agent.session).length, 0)
+  assert.equal(harness.steered.length, 0)
+})
+
+test('summaries beside a real tool call do not trigger the spin release', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness)
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const chunks = [
+    textStart(0),
+    textDelta('<summary>first planned action</summary>', 0),
+    textEnd('<summary>first planned action</summary>', 0),
+    { type: 'block-start', index: 1, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 1, id: 'call_1', name: 'read_file', argumentsDelta: '{}' },
+    { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'call_1', name: 'read_file', arguments: '{}' } },
+    textStart(2),
+    textDelta('<summary>second planned action</summary>', 2),
+    textEnd('<summary>second planned action</summary>', 2),
+    finish(),
+  ]
+  const output = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) output.push(chunk)
+
+  // A real executed call keeps the step on the normal path: no spin release,
+  // no notice, and the tool step's prose stays hidden.
+  assert.equal(harness.injected.length, 0)
+  assert.equal(harness.steered.length, 0)
+  assert.equal(output.some((chunk) => chunk.type === 'text-delta'), false)
+  assert.ok(output.some((chunk) => chunk.type === 'finish'))
+})
+
+test('a single summary without a tool call neither releases nor injects', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness)
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const chunks = [
+    textStart(0),
+    textDelta('<summary>only planned action</summary>', 0),
+    textEnd('<summary>only planned action</summary>', 0),
+    finish(),
+  ]
+  const output = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) output.push(chunk)
+
+  assert.deepEqual(output, chunks)
+  assert.equal(harness.injected.length, 0)
+  assert.equal(harness.steered.length, 0)
+  assert.equal(relayEvents(agent.session).length, 0)
+})

@@ -137,6 +137,8 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **不要为了"恢复流式输出"把缓冲拆掉**：先确认上面两个前提能同时满足，再谈改动。
 
+**2026-09 追加：缓冲不再"永远等到 finish"。** 实测 `cotton-codex-plus / gpt-5.6-luna` 会把工具调用写成 claude-code 文本语法（`to=... (commentary) json {}`），DSH 不执行，模型于是在同一次输出里反复"思考→写摘要→重写坏调用→再思考"，直到输出预算耗尽（单步 output 可达 1.4–2 万 token、耗时 4–7 分钟，Provider 侧没有第二次请求）。这类自旋步会在同一输出内产生多个完整 `<summary>` 标签却零工具调用。插件据此判定疑似空转（`SPIN_RELEASE_SUMMARIES = 2`，最近邻配对计数）：立即放行本步已缓冲文本（用户可实时看到错误并中断止损），把本轮标记 finalized（避免 finish 再次走 relay/continuation 路径），并向后续上下文注入插件自己的提示（`[No tool call received]`，**不是**模型的未执行摘要）。放行只发生在 `sawToolCall === false` 的步骤，带真实工具调用的步骤完全不受影响；TTL 兜底留作后续，视效果再定。
+
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
