@@ -154,14 +154,14 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
-- **`runtime.test.mjs`**：用模拟 ctx 调 `apply`，这是唯一能覆盖事件注册路径的办法。重点是**时序**——relay 必须等所有根工具调用的 durable `tool/result` 提交后才进 inbox；`session/event` 在 `Session.append` 的发布边界内触发，所以改写 inbox 要放进 `queueMicrotask`，否则会撞上 append 自身。另有跨路由可见性、A/B/C/D 序列、设置禁用与重新启用、已准入步骤中途切换后仍跑完、同 session 标题/异信号辅助流隔离、工具结果去重、失败步骤隐藏文本但不建 relay、`prepared-call` 防御性回退。
+- **`runtime.test.mjs`**：用模拟 ctx 调 `apply`，这是唯一能覆盖事件注册路径的办法。重点是**时序**——relay 必须等所有根工具调用的 durable `tool/result` 提交后才进 inbox；`session/event` 在 `Session.append` 的发布边界内触发，所以改写 inbox 要放进 `queueMicrotask`，否则会撞上 append 自身。另有跨路由可见性、A/B/C/D 序列、设置禁用与重新启用、已准入步骤中途切换后仍跑完、同 session 标题/异信号辅助流隔离、工具结果去重、失败步骤隐藏文本但不建 relay、`prepared-call` 防御性回退；另有三个用例覆盖疑似空转放行：两个完整摘要且零工具调用时放行并注入插件提示（断言注入文本不含模型自己的摘要）、带真实工具调用的步骤不触发、单个摘要不触发。
 - **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次卡片元素。文件头把实测到的宿主契约写进注释与桩里（`settings.plugin.item` 是不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（§4.3）。
 - **跨插件契约**：用**真实的** `dsh-repeat-tool-reminder` 代码验证"注入的消息不会重置它的重复计数"（该守卫只注册两个 handler、不依赖其它服务，所以能用两行 `ctx.on` 装进同一进程），并配一条**反向对照**——同样大小的 pre-step 批次里换成 `source.kind === 'user'` 的消息时链确实会被清除。没有这条对照，主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的**唯一**原因：本包从不 import 它，只有测试加载它，请勿当成未使用的残留删除。
 - **检查器必须先验红**：断言里凡是出现"用正则/转义去匹配常量"的写法，都要先拿一个必然含元字符的样本确认它真的会失败。本项目就抓到过一条：`new RegExp(TEXT.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&'))` 的字符类提前闭合，实测一个字符都不转义，只因为常量里唯一的元字符是 `.`（不转义也能以通配符匹配自己）才一直通过。现在改用 `includes`。
 
 ## 面向模型的文案（两处落点，互不同步）
 
-下面四段文案决定模型看到什么，其中两段在 README 里有一份副本：
+下面五段文案决定模型看到什么，其中三段在 README 里有一份副本：
 
 | 常量 | 定义处 | README 副本 | 谁读它 |
 |---|---|---|---|
@@ -169,6 +169,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 | `MISSING_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: missing]` 附注 |
 | `PARTIAL_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: partial]` 附注 |
 | `REASONING_CONTINUATION_TEXT` | `src/index.ts` | 无 | reasoning-only continuation 的正文 |
+| `SPIN_NOTICE_TEXT` | `src/index.ts` | 有，全文 | 疑似空转放行后注入的 `[No tool call received]` 提示 |
 
 **改任何一段都必须回头核对 README**，反之亦然：副本不会自动同步，而它恰恰是使用者（和检索到 README 的 Agent）据以判断"模型该输出什么"的唯一依据。文案本身也有纪律：只说**要求与后果**，不描述内部实现，且改文案后必须重跑 `pnpm test`（测试按字符串断言）。
 
