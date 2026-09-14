@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 // The host contracts this file models, as measured from the installed
 // 0.1.5-rc.1 packages. Keep the citations when editing: a mock that drifts from
 // the real contract hides defects instead of catching them (a "false green" —
-// see PLUGIN_RELEASE_GUIDE.md §4.3).
+// see PLUGIN_RELEASE_GUIDE.md -> guide/verification-method.md "验证本身也会骗你").
 //
 // 1. The card seat `settings.plugin.item` is declared at RUNTIME by the Plugins
 //    settings section, not by the settings domain package:

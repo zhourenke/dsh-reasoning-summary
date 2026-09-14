@@ -20,7 +20,7 @@
 | `cordis.patch.yml` | profile 层插入声明 |
 | `tsconfig.json` | 宿主半边配置（Node，无 DOM） |
 | `tsconfig.client.json` | 浏览器半边配置（DOM，无 Node 类型） |
-| `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（§6.6） |
+| `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（「供应链策略」） |
 
 ## 本地开发与构建
 
@@ -75,7 +75,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **不要把这个 `id` 当成配置的一部分写进 README 的用户指引**：使用者改的是 `settings.yaml`（或直接点设置卡片），那里没有 `id`、也没有 `name`，只有 namespace 分节。
 
-连接点挂载的插件**无法用 `dsh plugin remove` 卸载**（它不在 profile 的 `dependencies` 里），需要手工删连接点再摘掉 `dsh.profile.bundles` 条目。挂载状态可用 `Get-Item … -Force | Select-Object LinkType, Target` 核对，`Target` 必须等于你正在改的仓库路径（§6.1）。
+连接点挂载的插件**无法用 `dsh plugin remove` 卸载**（它不在 profile 的 `dependencies` 里），需要手工删连接点再摘掉 `dsh.profile.bundles` 条目。挂载状态可用 `Get-Item … -Force | Select-Object LinkType, Target` 核对，`Target` 必须等于你正在改的仓库路径（「连接点安装 ≠ 正式安装」）。
 
 ## 实现要点（为什么这样做）
 
@@ -149,13 +149,13 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 某个 Codex 系 Provider 上的实测（8 个 turn、364 个工具步）：`[Action summary: missing]` 共 110 步（30%），其中 73 步是"有 reasoning 但没写可见摘要"（模型把计划留在思考里），37 步是**纯工具调用步**（`blocks` 只有 `tool-call`，连 reasoning 都没有，典型是连续 `edit` 的机械执行）；纯工具调用步 100% 记为 missing，单个 64 步的 turn 里 missing 占 23 步（36%）。这类步没有新的目标或思路，要求它输出摘要没有信息价值，**因此不增加"连续 missing 升级提醒"之类的机制**；观察指标是 missing 占比与纯工具调用步占比，等模型或 Provider 变化后再复核。
 
-**用户中断的语义与类型注释给人的印象相反。** `inject()` 的实现是 `send(input, "next-step", false)`（进 `next-step` 队列、不唤醒 driver），`cancel(cause, options)` 只在 `!options.keepInbox` 时才 `inbox.clear()`——**丢弃是不传选项时的默认值**，而用户中断路径显式传 `keepInbox: true`（出处：`@deepseek-ai/dsh-agent-loop`、`@deepseek-ai/dsh-api-session-controller`，见指南 §4.11）。因此空转放行注入的 `[No tool call received]` 在用户中断后**仍留在队列里**，用户的下一条消息会唤醒模型并在同一个 pre-step 把它送进上下文（紧跟那条消息）——用户只需随口说一句，不必自己复述细节。凡是准备写进 README 的"用户操作后果"，都必须有实测或实现级调用点作证，不能只凭 `.d.ts` 里 `may` 的措辞推断。
+**用户中断的语义与类型注释给人的印象相反。** `inject()` 的实现是 `send(input, "next-step", false)`（进 `next-step` 队列、不唤醒 driver），`cancel(cause, options)` 只在 `!options.keepInbox` 时才 `inbox.clear()`——**丢弃是不传选项时的默认值**，而用户中断路径显式传 `keepInbox: true`（出处：`@deepseek-ai/dsh-agent-loop`、`@deepseek-ai/dsh-api-session-controller`，见 guide/contracts-with-host.md「inject 的队列在中断后仍活着」）。因此空转放行注入的 `[No tool call received]` 在用户中断后**仍留在队列里**，用户的下一条消息会唤醒模型并在同一个 pre-step 把它送进上下文（紧跟那条消息）——用户只需随口说一句，不必自己复述细节。凡是准备写进 README 的"用户操作后果"，都必须有实测或实现级调用点作证，不能只凭 `.d.ts` 里 `may` 的措辞推断。
 
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
 - **`runtime.test.mjs`**：用模拟 ctx 调 `apply`，这是唯一能覆盖事件注册路径的办法。重点是**时序**——relay 必须等所有根工具调用的 durable `tool/result` 提交后才进 inbox；`session/event` 在 `Session.append` 的发布边界内触发，所以改写 inbox 要放进 `queueMicrotask`，否则会撞上 append 自身。另有跨路由可见性、A/B/C/D 序列、设置禁用与重新启用、已准入步骤中途切换后仍跑完、同 session 标题/异信号辅助流隔离、工具结果去重、失败步骤隐藏文本但不建 relay、`prepared-call` 防御性回退；另有三个用例覆盖疑似空转放行：两个完整摘要且零工具调用时放行并注入插件提示（断言注入文本不含模型自己的摘要）、带真实工具调用的步骤不触发、单个摘要不触发。
-- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次卡片元素。文件头把实测到的宿主契约写进注释与桩里（`settings.plugin.item` 是不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（§4.3）。
+- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次卡片元素。文件头把实测到的宿主契约写进注释与桩里（`settings.plugin.item` 是不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（guide/verification-method.md「验证本身也会骗你」）。
 - **跨插件契约**：用**真实的** `dsh-repeat-tool-reminder` 代码验证"注入的消息不会重置它的重复计数"（该守卫只注册两个 handler、不依赖其它服务，所以能用两行 `ctx.on` 装进同一进程），并配一条**反向对照**——同样大小的 pre-step 批次里换成 `source.kind === 'user'` 的消息时链确实会被清除。没有这条对照，主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的**唯一**原因：本包从不 import 它，只有测试加载它，请勿当成未使用的残留删除。
 - **检查器必须先验红**：断言里凡是出现"用正则/转义去匹配常量"的写法，都要先拿一个必然含元字符的样本确认它真的会失败。本项目就抓到过一条：`new RegExp(TEXT.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&'))` 的字符类提前闭合，实测一个字符都不转义，只因为常量里唯一的元字符是 `.`（不转义也能以通配符匹配自己）才一直通过。现在改用 `includes`。
 
@@ -198,7 +198,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 三个 `import type {} from '@deepseek-ai/dsh-…'` 是**类型增强导入**，只在类型层存在：这些包把各自的服务与事件并进 Cordis 的 `Context`/`Events` 接口，不加载声明文件就没有 `ctx.settings`、`ctx.systemPrompt`、`ctx.tools` 与订阅事件名的类型。`import type {}` 在运行时被完全擦除，因此不会拉进宿主包的私有副本，也不会被 `noUnusedLocals` 报为未使用。
 
-DSH 升级后按 `PLUGIN_RELEASE_GUIDE.md` §8 重新核对事件名、宿主符号与 peer 范围。
+DSH 升级后按 `PLUGIN_RELEASE_GUIDE.md`「DSH 升级后的复核」重新核对事件名、宿主符号与 peer 范围。
 
 ## 许可证
 
