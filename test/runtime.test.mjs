@@ -847,6 +847,36 @@ test('disabling and re-enabling A pauses new summaries without hiding old ones',
   assert.equal(relayMessages(agent.session).length, 2)
 })
 
+test('re-enabling a route after an unselected tool step warms before injecting', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
+  const harness = makeHarness({ models: [] })
+  const agent = makeAgent(harness)
+
+  const disabled = await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  assert.equal(disabled.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  const disabledTool = await completeConcludedToolStep(harness, agent, {
+    turn: 1, step: 1, summary: 'the unselected route still used a tool', callId: 'unselected-tool',
+  })
+  assert.deepEqual(disabledTool.output, disabledTool.chunks)
+  assert.equal(relayMessages(agent.session).length, 0)
+
+  harness.updateSettings({ models: [route] })
+  const warmup = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
+  assert.equal(warmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  const reenabledWarmup = await completeConcludedToolStep(harness, agent, {
+    turn: 2, step: 1, summary: 'the re-enabled route completed its transparent warm-up', callId: 'reenabled-warmup',
+  })
+  assert.deepEqual(reenabledWarmup.output, reenabledWarmup.chunks)
+  assert.equal(relayMessages(agent.session).length, 0)
+
+  const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 2 })
+  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  await completeConcludedToolStep(harness, agent, {
+    turn: 2, step: 2, summary: 'the re-enabled route processed the next tool action', callId: 'reenabled-active',
+  })
+  assert.equal(relayMessages(agent.session).length, 1)
+})
+
 test('A enabled B disabled C enabled D disabled exposes complete history to every route', async () => {
   const A = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const B = { provider: 'bailian', model: 'deepseek-v4-flash' }
