@@ -8,7 +8,7 @@
 
 | 路径 | 说明 |
 |---|---|
-| `src/index.ts` | 宿主半边全部实现：设置、提示注入、流拦截、摘要规范化、relay 与 continuation |
+| `src/index.ts` | 宿主半边全部实现：设置、运行时上下文提示注入、流拦截、摘要规范化、relay 与 continuation |
 | `src/client.ts` | 浏览器半边：设置页里的一张模型选择卡片（纯脚本，无 `import`） |
 | `lib/index.js` | 宿主编译产物，**必须提交**（路线 A） |
 | `lib/client.js` | 浏览器编译产物，**必须提交** |
@@ -83,9 +83,13 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 当前是 `['agents', 'settings', 'systemPrompt']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。这三项之外的服务一旦被读取，运行时的测试 harness 会立刻抛错（它只提供这三个），所以误加读操作会在测试里暴露，而不是悄悄放宽声明。
 
-### 2. 状态挂在 `WeakMap<Agent, …>` 上，准入快照另存一份
+### 2. 状态挂在 WeakMap 上，准入快照另存一份
 
-`states` 以 live Agent 对象为键，不挂到 Agent 上、也不用全局 `Map`（那会让 Agent 无法回收）。另一个 `WeakMap`（`admissionSnapshots`）单独存"本步骤准入时采样到的路由与开关"：设置和模型选择可能在流进行期间变化，而**已准入的步骤必须按准入时的快照跑完**，不能被中途改写。两者都是 `WeakMap`，所以 profile 用 `patchReload: live` 重载时，新实例不会复用旧实例留下的状态。
+`states` 以 live Agent 对象为键，不挂到 Agent 上、也不用全局 `Map`（那会让 Agent 无法回收）。`runtimeStates` 则以 Agent 的 Session 对象为键，保存纯内存的路由、最近成功工具步骤和预热待观察状态；它同样不会写回 Session。另一个 `WeakMap`（`admissionSnapshots`）单独存“本步骤准入时采样到的路由、开关与 warmup 决策”：设置和模型选择可能在流进行期间变化，而**已准入的步骤必须按准入时的快照跑完**，不能被中途改写。三者都是 `WeakMap`，所以 profile 用 `patchReload: live` 重载时，新实例不会复用旧实例留下的状态。
+
+### 2.1 运行时预热的事件契约
+
+预热观察器只消费宿主已有的 `session/event` 生命周期：`step/start` 记录实际进入的 Provider/Model 路由，`assistant/message` 与 `tool/call` 识别结构化工具调用，`tool/result` 结算调用，`step/end` 提交最近工具时间。助手中断、请求/Agent 错误、取消信号或缺少完整生命周期都会使待观察步骤失效；请求重试会清空失败尝试的调用计数。模型切换始终创建透明预热步骤，同一路由只有在最近一次成功工具步骤距当前严格少于 30 分钟时才跳过预热。这里不能通过 `Session.append()` 添加插件自定义记录，否则会改变历史协议并污染用户会话。
 
 ### 3. relay 一律 `surfaceOp: 'append'`，不用 replacement
 
@@ -165,7 +169,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 | 常量 | 定义处 | README 副本 | 谁读它 |
 |---|---|---|---|
-| `PROMPT` | `src/index.ts` | 无（README 只描述协议） | 系统提示的 `reasoning-summary:instruction` 段 |
+| `PROMPT` | `src/index.ts` | 无（README 只描述协议） | runtime-context 快照中的 `reasoning-summary:instruction` 贡献 |
 | `MISSING_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: missing]` 附注 |
 | `PARTIAL_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: partial]` 附注 |
 | `REASONING_CONTINUATION_TEXT` | `src/index.ts` | 无 | reasoning-only continuation 的正文 |
@@ -190,7 +194,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 | `@deepseek-ai/dsh-agent` | `^0.1.5-rc.1` | `Agent`、`agent/pre-step` 等事件、`steer()` |
 | `@deepseek-ai/dsh-llm` | `^0.1.5-rc.1` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage` |
 | `@deepseek-ai/dsh-settings` | `^0.1.5-rc.1` | 设置注册与 `Context` 类型增强 |
-| `@deepseek-ai/dsh-system-prompt` | `^0.1.5-rc.1` | 提示段注册与 `system-prompt/assemble` |
+| `@deepseek-ai/dsh-system-prompt` | `^0.1.5-rc.1` | runtime-context 槽位注册与 `system-prompt/assemble` |
 | `@deepseek-ai/dsh-tools` | `^0.1.5-rc.1` | `tools/result` 事件 |
 | `@deepseek-ai/schemastery` | `^3.18.2` | 配置校验，**唯一真实的 `dependencies`** |
 

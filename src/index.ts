@@ -82,6 +82,7 @@ const MAX_REASONING_CONTINUATIONS = 3
 
 interface StepState {
   readonly agent: Agent
+  readonly route: string
   readonly turn: number
   readonly step: number
   readonly signal?: AbortSignal
@@ -114,6 +115,87 @@ interface StepState {
   continuationPending: boolean
   /** A max-token/error finish must never be converted into a continuation. */
   continuationBlocked: boolean
+}
+
+const WARMUP_WINDOW_MS = 30 * 60 * 1000
+
+interface RuntimeWarmupStep {
+  readonly route: string
+  readonly turn: number
+  readonly step: number
+  readonly selected: boolean
+  readonly signal?: AbortSignal
+  entered: boolean
+  sawToolCall: boolean
+  assistantCompleted: boolean
+  toolCallAt?: number
+  toolCallIds: Set<string>
+  toolResultIds: Set<string>
+  anonymousToolCalls: number
+  anonymousToolResults: number
+  interrupted: boolean
+  failed: boolean
+}
+
+interface RuntimeToolSnapshot {
+  route?: string
+  at?: number
+  selected?: boolean
+}
+
+interface RuntimeCommittedToolStep {
+  readonly step: RuntimeWarmupStep
+  readonly previous: RuntimeToolSnapshot
+}
+
+/**
+ * Runtime-only activation state. The plugin deliberately derives this from
+ * ordinary host events and never appends a plugin-owned Session record.
+ */
+interface RuntimeSessionState {
+  /** Route of the most recently entered model step, including unselected ones. */
+  lastEnteredRoute?: string
+  /** Route and time of the most recent non-interrupted tool step. */
+  lastToolRoute?: string
+  lastToolAt?: number
+  /** Whether the last tool step was selected when it entered. */
+  lastToolSelected?: boolean
+  committed?: RuntimeCommittedToolStep
+  pending?: RuntimeWarmupStep
+}
+
+function warmupExpired(lastToolAt: number | undefined, now: number): boolean {
+  if (lastToolAt === undefined) return true
+  const elapsed = now - lastToolAt
+  return elapsed < 0 || elapsed >= WARMUP_WINDOW_MS
+}
+
+function needsWarmup(state: RuntimeSessionState, route: string, now = Date.now()): boolean {
+  // A route switch always starts a new warm-up, even when the route was ready
+  // earlier in this Session. The recent-tool shortcut applies only while the
+  // same route remains active and the prior tool step entered while selected.
+  if (state.lastEnteredRoute !== route) return true
+  if (state.lastToolRoute !== route || state.lastToolSelected !== true) return true
+  return warmupExpired(state.lastToolAt, now)
+}
+
+function eventTime(event: any): number {
+  return typeof event?.time === 'number' && Number.isFinite(event.time) ? event.time : Date.now()
+}
+
+function runtimeToolResultsSettled(step: RuntimeWarmupStep): boolean {
+  const expected = step.toolCallIds.size + step.anonymousToolCalls
+  const settled = step.toolResultIds.size + step.anonymousToolResults
+  return expected > 0 && settled >= expected
+}
+
+function recordRuntimeAssistantToolCalls(step: RuntimeWarmupStep, message: AssistantMessageLike | undefined): void {
+  for (const block of message?.content ?? []) {
+    if (block.type !== 'tool-call') continue
+    step.sawToolCall = true
+    const id = typeof (block as { id?: unknown }).id === 'string' ? String((block as { id: string }).id) : ''
+    if (id) step.toolCallIds.add(id)
+  }
 }
 
 function routeKey(provider: unknown, model: unknown): string {
@@ -445,8 +527,8 @@ const SPIN_RELEASE_SUMMARIES = 2
 
 const SPIN_NOTICE_TEXT = [
   '[No tool call received]',
-  'You wrote multiple action summaries, but DSH received no tool call — text-form tool invocations such as "to=... json {}" are never executed.',
-  'Emit a native tool-use block, or stop writing summaries and give the final answer now.',
+  'DSH executes tools only when the assistant emits structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed.',
+  'Use the appropriate structured DSH tool-call block(s) now, or stop writing summaries and provide the complete user-facing answer.',
 ].join('\n')
 
 function makeReasoningContinuation(): UserMessage {
@@ -805,7 +887,23 @@ async function* transformStream(
   }
 }
 
-const PROMPT = `Tool-step communication protocol\n\nThe action summary must be emitted as visible assistant text — never as reasoning/thinking content; a reasoning-only summary is treated as missing.\n\nWhen a step calls one or more tools, emit exactly one literal XML-style summary tag as visible text immediately before the first tool call, then the call(s):\n<summary>target, concrete evidence or current state, and the immediate operation or decision</summary>\n\nThe tag is the execution record the next step receives, so be specific and actionable: name the relevant user request, artifact, observation, change, or decision, and include the concrete file, function, command, result, or constraint the next action needs. Do not replace facts with vague status language such as “continue analysis”, “make progress”, or “check the implementation”.\n\nIn a tool-calling step, emit no ordinary assistant prose outside that tag — no progress narration, internal planning, code paths, or mechanism explanations; put execution detail in the tag instead. Any visible text outside the tag is discarded: it is not shown to the user, is not carried forward, and does not count as a summary.\n\nFor a final answer with no tool call, emit no summary tag: provide one complete user-facing answer with the necessary context and conclusions. If you can produce neither a tool call nor a complete answer, emit no partial progress message; keep reasoning until you can. Never stop after reasoning alone.`
+const PROMPT_CONTEXT_NAME = 'reasoning-summary:instruction'
+const PROMPT_CONTEXT_ORDER = 130
+
+const PROMPT = `Tool-step communication protocol
+
+The action summary must be emitted as visible assistant text — never as reasoning/thinking content; a reasoning-only summary is treated as missing.
+
+When a step calls one or more tools, emit exactly one literal XML-style summary tag as visible text immediately before the first tool call, then emit the tool call(s) as structured DSH tool-call block(s):
+<summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
+
+DSH executes tools only from structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed. Do not write tool-call syntax as visible text.
+
+The tag is the execution record the next step receives, so be specific and actionable: name the relevant user request, artifact, observation, change, or decision, and include the concrete file, function, command, result, or constraint the next action needs. Do not replace facts with vague status language such as “continue analysis”, “make progress”, or “check the implementation”.
+
+In a tool-calling step, emit no ordinary assistant prose outside that tag — no progress narration, internal planning, code paths, or mechanism explanations; put execution detail in the tag instead. Any visible text outside the tag is discarded: it is not shown to the user, is not carried forward, and does not count as a summary.
+
+For a final answer with no tool call, emit no summary tag: provide one complete user-facing answer with the necessary context and conclusions. If you can produce neither a tool call nor a complete answer, emit no partial progress message; keep reasoning until you can. Never stop after reasoning alone.`
 
 // Only the services this half actually reads. Subscribing to `llm/stream` or
 // `tools/result` does not require those packages' services in `inject` — the
@@ -825,7 +923,17 @@ export function apply(ctx: Context): void {
   // The selected route is supplied by DSH's model-selection layer during prompt
   // assembly. Keep only that per-agent admission snapshot; Agent.options is the
   // fallback for callers that invoke pre-step without a preceding assembly.
-  const admissionSnapshots = new WeakMap<object, { route: string; enabled: boolean }>()
+  const admissionSnapshots = new WeakMap<object, { route: string; enabled: boolean; warmup: boolean }>()
+  const runtimeStates = new WeakMap<object, RuntimeSessionState>()
+  const runtimeStateFor = (agent: Agent): RuntimeSessionState => {
+    const session = agent.session as object
+    let state = runtimeStates.get(session)
+    if (!state) {
+      state = {}
+      runtimeStates.set(session, state)
+    }
+    return state
+  }
   const currentRoute = (agent: Agent): string => routeKey(agent.options.provider, agent.options.model)
   const on = ctx.on.bind(ctx)
 
@@ -842,18 +950,19 @@ export function apply(ctx: Context): void {
     return
   }
 
-  ctx.systemPrompt.section({
-    name: 'reasoning-summary:instruction',
-    order: 160,
-    text: (assemblyContext) => {
-      const agent = (assemblyContext as { agent?: Agent }).agent
-      if (!agent || !selected.has(currentRoute(agent))) return ''
-      return PROMPT
-    },
+  ctx.systemPrompt.context({
+    name: PROMPT_CONTEXT_NAME,
+    // This registration is intentionally empty. Route and warm-up gating is
+    // resolved by the assembly waterfall below; putting PROMPT here would make
+    // it visible to every route before that decision exists.
+    // The Agent Loop turns the resolved context into a durable runtime snapshot
+    // only when the complete snapshot text changes.
+    order: PROMPT_CONTEXT_ORDER,
+    text: '',
   })
   // The model-selection layer snapshots its selected route in the final
   // assembly variables after its inner waterfall returns. Rewrite only this
-  // plugin's section from that authoritative result, so a session whose
+  // plugin's context from that authoritative result, so a session whose
   // Agent.options still contains the creation-time default cannot accidentally
   // receive the instruction (or miss it after selecting a configured route).
   // The incoming assembly payload is unused: the authoritative result is the
@@ -864,16 +973,19 @@ export function apply(ctx: Context): void {
     const agent = assemblyContext?.agent as Agent | undefined
     const route = routeFromValue(result?.variables) ?? (agent === undefined ? undefined : routeKey(agent.options.provider, agent.options.model))
     const enabled = route !== undefined && selected.has(route)
+    const runtime = agent?.session === undefined ? undefined : runtimeStateFor(agent)
+    const warmup = enabled && runtime !== undefined ? needsWarmup(runtime, route) : false
+    const text = enabled && !warmup ? PROMPT : ''
     if (agent !== undefined && route !== undefined) {
-      // `agent/pre-step` consumes this once. It keeps the prompt and stream
+      // `agent/pre-step` consumes this once. It keeps the context and stream
       // policy coherent when settings change between assembly and pre-step.
-      admissionSnapshots.set(agent as object, { route, enabled })
+      admissionSnapshots.set(agent as object, { route, enabled, warmup })
     }
     return {
       ...result,
-      sections: (result?.sections ?? []).map((section: any) => section?.name === 'reasoning-summary:instruction'
-        ? { ...section, text: enabled ? PROMPT : '' }
-        : section),
+      contexts: (result?.contexts ?? []).map((context: any) => context?.name === PROMPT_CONTEXT_NAME
+        ? { ...context, text }
+        : context),
     }
   }, { prepend: true })
 
@@ -883,6 +995,35 @@ export function apply(ctx: Context): void {
   // step. A reasoning-only response creates another step, so this state must
   // survive replacement of the StepState until the turn finally closes.
   const turnStates = new WeakMap<object, TurnContinuationState>()
+  const dropRuntimePending = (agent: Agent, turn: number, step: number): void => {
+    const runtime = runtimeStateFor(agent)
+    if (runtime.pending?.turn === turn && runtime.pending.step === step) runtime.pending = undefined
+  }
+  const markRuntimePendingFailed = (agent: Agent, turn: number, step: number): void => {
+    const runtime = runtimeStateFor(agent)
+    const pending = runtime.pending
+    if (pending?.turn === turn && pending.step === step) pending.failed = true
+    const committed = runtime.committed
+    if (committed?.step.turn !== turn || committed.step.step !== step) return
+    runtime.lastToolRoute = committed.previous.route
+    runtime.lastToolAt = committed.previous.at
+    runtime.lastToolSelected = committed.previous.selected
+    runtime.committed = undefined
+  }
+  const resetRuntimePendingAttempt = (agent: Agent, turn: number, step: number): void => {
+    const runtime = runtimeStateFor(agent)
+    const pending = runtime.pending
+    if (!pending || pending.turn !== turn || pending.step !== step) return
+    pending.sawToolCall = false
+    pending.assistantCompleted = false
+    pending.toolCallAt = undefined
+    pending.toolCallIds.clear()
+    pending.toolResultIds.clear()
+    pending.anonymousToolCalls = 0
+    pending.anonymousToolResults = 0
+    pending.interrupted = false
+    pending.failed = false
+  }
   const dropState = (agent: object, state?: StepState, preserveTurnState = false): void => {
     const current = states.get(agent)
     const target = state ?? current
@@ -905,6 +1046,8 @@ export function apply(ctx: Context): void {
     admissionSnapshots.delete(payload.agent)
     const route = admission?.route ?? currentRoute(agent)
     const enabled = admission?.enabled ?? selected.has(route)
+    const runtime = runtimeStateFor(agent)
+    const warmup = admission?.warmup ?? (enabled && needsWarmup(runtime, route))
     const previousState = states.get(payload.agent)
     const previousTurnState = turnStates.get(payload.agent)
     const preserveTurnState = previousTurnState?.turn === payload.turn
@@ -914,9 +1057,39 @@ export function apply(ctx: Context): void {
     // must not discard an already-started stream or its action summary.
     if (previousState) dropState(payload.agent, previousState, preserveTurnState)
 
-    if (!enabled) {
+    runtime.pending = {
+      route,
+      turn: payload.turn,
+      step: payload.step,
+      selected: enabled,
+      signal: payload.signal,
+      entered: false,
+      sawToolCall: false,
+      assistantCompleted: false,
+      toolCallIds: new Set<string>(),
+      toolResultIds: new Set<string>(),
+      anonymousToolCalls: 0,
+      anonymousToolResults: 0,
+      interrupted: false,
+      failed: false,
+    }
+
+    if (!enabled || warmup) {
       if (!preserveTurnState) turnStates.delete(payload.agent)
-      return next()
+      let pending: Promise<PreStepDecision>
+      try {
+        pending = next()
+      } catch (error) {
+        dropRuntimePending(agent, payload.turn, payload.step)
+        throw error
+      }
+      return pending.then((decision) => {
+        if (decision.kind === 'reject') dropRuntimePending(agent, payload.turn, payload.step)
+        return decision
+      }, (error) => {
+        dropRuntimePending(agent, payload.turn, payload.step)
+        throw error
+      })
     }
 
     const continuationState: TurnContinuationState = preserveTurnState && previousTurnState !== undefined
@@ -925,6 +1098,7 @@ export function apply(ctx: Context): void {
     turnStates.set(payload.agent, continuationState)
     const state: StepState = {
       agent: payload.agent as Agent,
+      route,
       turn: payload.turn,
       step: payload.step,
       signal: payload.signal,
@@ -942,13 +1116,18 @@ export function apply(ctx: Context): void {
     try {
       pending = next()
     } catch (error) {
+      dropRuntimePending(agent, payload.turn, payload.step)
       dropState(payload.agent, state)
       throw error
     }
     return pending.then((decision) => {
-      if (decision.kind === 'reject') dropState(payload.agent, state)
+      if (decision.kind === 'reject') {
+        dropRuntimePending(agent, payload.turn, payload.step)
+        dropState(payload.agent, state)
+      }
       return decision
     }, (error) => {
+      dropRuntimePending(agent, payload.turn, payload.step)
       dropState(payload.agent, state)
       throw error
     })
@@ -987,6 +1166,62 @@ export function apply(ctx: Context): void {
   // `tool/result`. Observe that committed event as well: this covers callers
   // that publish a result without going through ToolRuntime.
   on('session/event', (session: any, event: any) => {
+    const runtime = runtimeStates.get(session)
+    const pending = runtime?.pending
+    const matchesPending = pending !== undefined
+      && event.data?.turn === pending.turn
+      && event.data?.step === pending.step
+
+    if (matchesPending && runtime !== undefined) {
+      if (event.type === 'step/start') {
+        runtime.committed = undefined
+        pending.entered = true
+        runtime.lastEnteredRoute = pending.route
+      } else if (event.type === 'assistant/message') {
+        if (event.data.interrupted === true) {
+          pending.interrupted = true
+        } else {
+          pending.assistantCompleted = true
+          const hadToolCall = pending.sawToolCall
+          recordRuntimeAssistantToolCalls(pending, event.data.message)
+          if (!hadToolCall && pending.sawToolCall) pending.toolCallAt = eventTime(event)
+        }
+      } else if (event.type === 'tool/call') {
+        pending.sawToolCall = true
+        pending.toolCallAt ??= eventTime(event)
+        const callId = event.data.callId === undefined || event.data.callId === null ? '' : String(event.data.callId)
+        if (callId) pending.toolCallIds.add(callId)
+        else pending.anonymousToolCalls++
+      } else if (event.type === 'tool/result') {
+        const callId = event.data.message?.source?.callId
+        const id = callId === undefined || callId === null ? '' : String(callId)
+        if (id) {
+          if (pending.toolCallIds.has(id) && !pending.toolResultIds.has(id)) pending.toolResultIds.add(id)
+        } else {
+          pending.anonymousToolResults++
+        }
+      } else if (event.type === 'step/end') {
+        if (pending.entered
+          && pending.sawToolCall
+          && pending.assistantCompleted
+          && !pending.interrupted
+          && !pending.failed
+          && !pending.signal?.aborted
+          && runtimeToolResultsSettled(pending)) {
+          const previous: RuntimeToolSnapshot = {
+            route: runtime.lastToolRoute,
+            at: runtime.lastToolAt,
+            selected: runtime.lastToolSelected,
+          }
+          runtime.lastToolRoute = pending.route
+          runtime.lastToolAt = pending.toolCallAt ?? eventTime(event)
+          runtime.lastToolSelected = pending.selected
+          runtime.committed = { step: pending, previous }
+        }
+        runtime.pending = undefined
+      }
+    }
+
     const state = sessionStates.get(session)
     if (!state || !state.active) return
     if (event.data?.turn !== state.turn || event.data?.step !== state.step) return
@@ -1017,6 +1252,7 @@ export function apply(ctx: Context): void {
   })
 
   on('agent/request-error', (payload: any, next: () => Promise<RequestErrorAction>) => {
+    resetRuntimePendingAttempt(payload.agent, payload.turn, payload.step)
     const state = states.get(payload.agent)
     if (state && state.active && state.turn === payload.turn && state.step === payload.step) {
       resetAttempt(state)
@@ -1027,6 +1263,8 @@ export function apply(ctx: Context): void {
   })
 
   on('agent/disposed', ({ agent }: any) => {
+    const runtime = runtimeStates.get((agent as Agent).session as object)
+    if (runtime?.pending !== undefined) runtime.pending.failed = true
     dropState(agent)
   })
   on('agent/turn-stopping', ({ agent, turn }: any) => {
@@ -1050,6 +1288,7 @@ export function apply(ctx: Context): void {
     dropState(agent, state)
   })
   on('agent/error', ({ agent, turn, step }: any) => {
+    markRuntimePendingFailed(agent, turn, step)
     const state = states.get(agent)
     if (!state || !state.active || state.turn !== turn || state.step !== step) return
     dropState(agent, state)

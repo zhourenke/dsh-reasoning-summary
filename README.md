@@ -65,13 +65,21 @@ reasoning-summary:
 
 ## 插件要求模型做什么
 
-插件会在被选中路由的系统提示里加入一段要求：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
+插件会把这段要求注册为被选中路由的**动态运行时上下文快照**：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
 
 ```xml
 <summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
-摘要要写明相关的用户请求、涉及的文件 / 函数 / 命令、已经确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。
+摘要之后必须由 DSH 接收一个结构化的 DSH tool-call block 才会执行工具；把工具调用写成普通可见文本不会执行。摘要要写明相关的用户请求、涉及的文件 / 函数 / 命令、已经确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。
+
+### 上下文快照与缓存
+
+插件只在加载时调用一次 `systemPrompt.context()` 注册固定槽位，不再注册 `systemPrompt.section()`。每次 Agent Loop 组装时，waterfall 根据最终的 Provider/Model 和当前预热状态改写这个槽位的 `contexts` 条目。DSH 的 `RuntimeContextProjection` 随后把组装结果作为带 `source.form: 'snapshot'` 的 `user/message` 运行时上下文快照写入历史，并按完整快照文本去重；相同内容不会反复追加，也不会反复改写 `system/message`。
+
+这不是“零成本缓存”的保证。首次写入快照、从提示切换到空快照、或路由切换后重新写入提示，都会改变一次模型可见上下文；Provider 是否命中自己的前缀缓存仍由 Provider 的缓存键和历史投影决定。稳定在同一路由、同一预热状态后，后续组装会得到完全相同的快照，不会因为插件每步重新注册系统提示而额外制造变化。为了保持未选中路由完全不生效，路由切换时必要的清空/重写仍会产生一次上下文变化。
+
+快照是模型可见的 `user/message`，位置由 Agent Loop 放在当前已领取的用户消息之后，不是 `system/message`；这也是本插件选择兼容性和路由门控后仍能减少重复系统提示改写所付出的边界。
 
 判定只看**可见文本**：只写在推理 / 思考内容里的摘要等同没写。摘要还必须出现在第一个工具调用之前。工具步骤的这些文本（**包括摘要标签本身**）都不会显示在界面上。
 
@@ -91,8 +99,8 @@ Summary incomplete: the response ended before the closing tag; only a fully clos
 
 ```text
 [No tool call received]
-You wrote multiple action summaries, but DSH received no tool call — text-form tool invocations such as "to=... json {}" are never executed.
-Emit a native tool-use block, or stop writing summaries and give the final answer now.
+DSH executes tools only when the assistant emits structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed.
+Use the appropriate structured DSH tool-call block(s) now, or stop writing summaries and provide the complete user-facing answer.
 ```
 
 这条提示排在下一步的 inbox 里：轮次自然结束时会随下一步自动到达模型，无需你干预；你**手动终止**回答也不会让它丢失——DSH 的用户中断会保留待领取的队列，你随后发出的下一条消息会唤醒模型，提示在同一个步骤边界紧跟那条消息进入上下文。所以中断空转后只需随口说一句（例如「注意工具调用格式」），插件自带的准确提示就会自动送达，不必由你复述细节。
@@ -112,13 +120,22 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 模型只输出推理、既没有工具调用也没有可见答复时，插件会在**同一个 turn** 内请求继续，通知标题为 `[Continue after reasoning-only response]`，最多 3 次。
 
+## 预热与复用窗口
+
+插件的预热状态只存在于进程内的 `WeakMap`，按 Session 隔离，不会追加插件自定义的 Session 事件或字段。冷启动、模型切换，或上一次工具步骤已超过 30 分钟时，选中路由的下一步是透明预热：不注入本插件提示，也不解析、隐藏、relay 或 continuation 当前流。
+
+只有当这个步骤真正进入、产生结构化工具调用、助手消息正常完成、工具结果已经结算并到达 `step/end` 后，当前路由才算预热完成。之后同一 Provider/Model 路由在距上一次成功工具步骤严格少于 30 分钟时可以复用；正好 30 分钟、时钟回拨、直接回答、仅推理、伪工具文本、失败或中断步骤都会重新预热。
+
+每次切换 Provider/Model 都会强制重新预热，即使目标路由以前已经准备好，或切换前后都在启用列表中。首次直接回答不会让插件提前生效；例如第一轮没有工具调用，第二轮第一步出现工具调用时该步仍透明放行，第二轮后续步骤才可获得提示。
+
 ## 什么时候生效
 
 每个步骤在**准入时**采样一次当前路由与设置：
 
 | 步骤准入状态 | 当前步骤的新行为 | 已有摘要历史 |
 |---|---|---|
-| 精确路由已启用 | 注入提示；处理当前流；可产生 relay 或 continuation | 完整可见 |
+| 精确路由已启用且已预热 | 注入提示；处理当前流；可产生 relay 或 continuation | 完整可见 |
+| 精确路由已启用但正在预热 | 普通流原样通过；不解析、不隐藏、不产生 relay / continuation | 完整可见 |
 | 精确路由未启用 | 普通流原样通过；不产生新的 relay / continuation | 完整可见 |
 
 已准入的步骤不受中途变更影响：模型切换或设置变更只作用于下一个步骤，当前步骤仍会写完摘要并持久化。因此以下行为都是有意设计的：

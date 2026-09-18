@@ -65,13 +65,21 @@ To confirm it is working: after the last tool call of each step, the interface s
 
 ## What the plugin asks the model to do
 
-The plugin adds an instruction to the system prompt of the selected routes: **before calling a tool, write one action summary as visible text**, in a literal tag:
+The plugin registers this requirement as a **dynamic runtime-context snapshot** for selected routes: **before calling a tool, write one action summary as visible text**, in a literal tag:
 
 ```xml
 <summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
-The summary should name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.
+After the summary, DSH must receive a structured DSH tool-call block for the tool to execute; writing a tool invocation as ordinary visible text does not execute it. The summary should name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.
+
+### Runtime snapshots and caching
+
+The plugin calls `systemPrompt.context()` once at load time to register a fixed slot; it no longer registers a `systemPrompt.section()`. On each Agent Loop assembly, the waterfall rewrites that slot's `contexts` entry from the final Provider/Model selection and current warm-up state. DSH's `RuntimeContextProjection` then records the assembled value as a `user/message` runtime snapshot with `source.form: 'snapshot'`, and deduplicates by the complete snapshot text. Identical content is not appended repeatedly and does not repeatedly rewrite a `system/message`.
+
+This is not a guarantee of zero-cost caching. The first snapshot insertion, a transition from the instruction to an empty snapshot, or a re-entry after a route switch changes the model-visible context once; whether the Provider hits its own prefix cache still depends on its cache key and history projection. Once the same route and warm-up state remain stable, later assemblies produce the same snapshot and do not create per-step system-prompt mutations. To keep the instruction completely inactive on unselected routes, a route switch still requires one context clear or rewrite.
+
+The snapshot is model-visible `user/message` content placed by the Agent Loop after the currently claimed user messages, not a `system/message`. That is the compatibility boundary accepted here in exchange for avoiding repeated system-prompt rewrites while retaining exact route gating.
 
 Only **visible text** counts: a summary that lives in reasoning / thinking is treated as missing. It also has to come before the first tool call. None of this text — **including the summary tag itself** — is shown in the interface.
 
@@ -91,8 +99,8 @@ When one output carries **two complete `<summary>` tags but still no tool call**
 
 ```text
 [No tool call received]
-You wrote multiple action summaries, but DSH received no tool call — text-form tool invocations such as "to=... json {}" are never executed.
-Emit a native tool-use block, or stop writing summaries and give the final answer now.
+DSH executes tools only when the assistant emits structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed.
+Use the appropriate structured DSH tool-call block(s) now, or stop writing summaries and provide the complete user-facing answer.
 ```
 
 The notice waits in the next step's inbox and reaches the model automatically when the turn ends on its own — no action needed. Interrupting the response manually does not lose it either: a user cancellation keeps pending inbox items, so your next message wakes the model and the notice enters the context at that same step boundary, right after your message. After interrupting a spin you only need to say something brief (for example "mind the tool-call format") — the plugin's own precise notice is delivered for you, and you never have to restate the details yourself.
@@ -112,13 +120,22 @@ Only incomplete or missing records label `partial` or `missing` in the heading. 
 
 When a model emits reasoning only, with neither a tool call nor a visible answer, the plugin asks for a continuation inside the **same turn**, headed `[Continue after reasoning-only response]`, at most 3 times.
 
+## Warm-up and reuse window
+
+Warm-up state exists only in memory in a `WeakMap`, isolated per Session. The plugin never appends a plugin-defined Session event or field. On cold start, after a model switch, or after more than 30 minutes since the last tool step, the next step on a selected route is transparent warm-up: the plugin prompt is omitted, and the stream is not parsed, hidden, relayed, or used for continuation.
+
+A route becomes ready only after the step has actually entered, produced a structured tool call, completed a normal assistant message, settled its tool results, and reached `step/end`. The same exact Provider/Model route may then reuse the warm-up only when less than 30 minutes have elapsed since its last successful tool step. Exactly 30 minutes, clock rollback, a direct answer, reasoning-only output, pseudo-tool text, failure, or interruption requires warm-up again.
+
+Every Provider/Model switch forces a fresh warm-up, even when the target route was ready earlier or both routes are selected. A first direct answer does not activate the plugin early: if round one has no tool call and the first step of round two calls a tool, that step remains transparent; the later step can receive the instruction.
+
 ## When it applies
 
 Each step samples its route and settings once, **at admission**:
 
 | Step admission | New behavior for the current step | Existing summary history |
 |---|---|---|
-| Exact route enabled | Inject the instruction; process the stream; possibly produce a relay or continuation | Fully visible |
+| Exact route enabled and warm | Inject the instruction; process the stream; possibly produce a relay or continuation | Fully visible |
+| Exact route enabled but warming up | Pass the ordinary stream through unchanged; do not parse, hide, relay, or continue | Fully visible |
 | Exact route disabled | Pass the ordinary stream through unchanged; produce no new relay / continuation | Fully visible |
 
 An admitted step is unaffected by later changes: a model switch or settings change applies to the next step, while the current one still finishes and persists its summary. These behaviors are therefore deliberate:
