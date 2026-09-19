@@ -847,7 +847,7 @@ test('disabling and re-enabling A pauses new summaries without hiding old ones',
   assert.equal(relayMessages(agent.session).length, 2)
 })
 
-test('re-enabling a route after an unselected tool step warms before injecting', async () => {
+test('a successful tool step on an unselected route can warm later selection', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const harness = makeHarness({ models: [] })
   const agent = makeAgent(harness)
@@ -861,18 +861,10 @@ test('re-enabling a route after an unselected tool step warms before injecting',
   assert.equal(relayMessages(agent.session).length, 0)
 
   harness.updateSettings({ models: [route] })
-  const warmup = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.equal(warmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
-  const reenabledWarmup = await completeConcludedToolStep(harness, agent, {
-    turn: 2, step: 1, summary: 'the re-enabled route completed its transparent warm-up', callId: 'reenabled-warmup',
-  })
-  assert.deepEqual(reenabledWarmup.output, reenabledWarmup.chunks)
-  assert.equal(relayMessages(agent.session).length, 0)
-
-  const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 2 })
-  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  const reenabled = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
+  assert.match(reenabled.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
   await completeConcludedToolStep(harness, agent, {
-    turn: 2, step: 2, summary: 'the re-enabled route processed the next tool action', callId: 'reenabled-active',
+    turn: 2, step: 1, summary: 'the re-enabled route reused the prior tool warm-up', callId: 'reenabled-active',
   })
   assert.equal(relayMessages(agent.session).length, 1)
 })

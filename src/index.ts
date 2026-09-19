@@ -123,7 +123,6 @@ interface RuntimeWarmupStep {
   readonly route: string
   readonly turn: number
   readonly step: number
-  readonly selected: boolean
   readonly signal?: AbortSignal
   entered: boolean
   sawToolCall: boolean
@@ -140,7 +139,6 @@ interface RuntimeWarmupStep {
 interface RuntimeToolSnapshot {
   route?: string
   at?: number
-  selected?: boolean
 }
 
 interface RuntimeCommittedToolStep {
@@ -158,8 +156,6 @@ interface RuntimeSessionState {
   /** Route and time of the most recent non-interrupted tool step. */
   lastToolRoute?: string
   lastToolAt?: number
-  /** Whether the last tool step was selected when it entered. */
-  lastToolSelected?: boolean
   committed?: RuntimeCommittedToolStep
   pending?: RuntimeWarmupStep
 }
@@ -172,10 +168,10 @@ function warmupExpired(lastToolAt: number | undefined, now: number): boolean {
 
 function needsWarmup(state: RuntimeSessionState, route: string, now = Date.now()): boolean {
   // A route switch always starts a new warm-up, even when the route was ready
-  // earlier in this Session. The recent-tool shortcut applies only while the
-  // same route remains active and the prior tool step entered while selected.
+  // earlier in this Session. A successful tool step is useful warm-up evidence
+  // regardless of whether the route was selected when that step entered.
   if (state.lastEnteredRoute !== route) return true
-  if (state.lastToolRoute !== route || state.lastToolSelected !== true) return true
+  if (state.lastToolRoute !== route) return true
   return warmupExpired(state.lastToolAt, now)
 }
 
@@ -1007,7 +1003,6 @@ export function apply(ctx: Context): void {
     if (committed?.step.turn !== turn || committed.step.step !== step) return
     runtime.lastToolRoute = committed.previous.route
     runtime.lastToolAt = committed.previous.at
-    runtime.lastToolSelected = committed.previous.selected
     runtime.committed = undefined
   }
   const resetRuntimePendingAttempt = (agent: Agent, turn: number, step: number): void => {
@@ -1061,7 +1056,6 @@ export function apply(ctx: Context): void {
       route,
       turn: payload.turn,
       step: payload.step,
-      selected: enabled,
       signal: payload.signal,
       entered: false,
       sawToolCall: false,
@@ -1211,11 +1205,9 @@ export function apply(ctx: Context): void {
           const previous: RuntimeToolSnapshot = {
             route: runtime.lastToolRoute,
             at: runtime.lastToolAt,
-            selected: runtime.lastToolSelected,
           }
           runtime.lastToolRoute = pending.route
           runtime.lastToolAt = pending.toolCallAt ?? eventTime(event)
-          runtime.lastToolSelected = pending.selected
           runtime.committed = { step: pending, previous }
         }
         runtime.pending = undefined

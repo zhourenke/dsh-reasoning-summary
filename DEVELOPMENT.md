@@ -89,7 +89,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 2.1 运行时预热的事件契约
 
-预热观察器只消费宿主已有的 `session/event` 生命周期：`step/start` 记录实际进入的 Provider/Model 路由，`assistant/message` 与 `tool/call` 识别结构化工具调用，`tool/result` 结算调用，`step/end` 提交最近工具时间。助手中断、请求/Agent 错误、取消信号或缺少完整生命周期都会使待观察步骤失效；请求重试会清空失败尝试的调用计数。模型切换始终创建透明预热步骤，同一路由只有在最近一次成功工具步骤距当前严格少于 30 分钟时才跳过预热。这里不能通过 `Session.append()` 添加插件自定义记录，否则会改变历史协议并污染用户会话。
+预热观察器只消费宿主已有的 `session/event` 生命周期：`step/start` 记录实际进入的 Provider/Model 路由，`assistant/message` 与 `tool/call` 识别结构化工具调用，`tool/result` 结算调用，`step/end` 提交最近工具时间。只要工具步骤完整成功，证据与准入时是否勾选无关；未勾选只绕过插件输出，不会丢弃这条工具证据。助手中断、请求/Agent 错误、取消信号或缺少完整生命周期都会使待观察步骤失效；请求重试会清空失败尝试的调用计数。模型切换始终创建透明预热步骤，同一路由只有在最近一次成功工具步骤距当前严格少于 30 分钟时才跳过预热。这里不能通过 `Session.append()` 添加插件自定义记录，否则会改变历史协议并污染用户会话。
 
 ### 3. relay 一律 `surfaceOp: 'append'`，不用 replacement
 
