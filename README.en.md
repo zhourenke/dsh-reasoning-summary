@@ -83,7 +83,7 @@ The snapshot is model-visible `user/message` content placed by the Agent Loop af
 
 Only **visible text** counts: a summary that lives in reasoning / thinking is treated as missing. It also has to come before the first tool call. None of this text — **including the summary tag itself** — is shown in the interface.
 
-The plugin buffers selected-route output until the response ends so it can parse summaries and hide ordinary tool-step text. It also passes reasoning, usage, block, and tool frames to downstream stream plugins in the provider's original receive order, including plugins such as reasoning-merge. The selected route is therefore intentionally pseudo-non-streaming; this keeps the output protocol and downstream block order stable.
+The plugin buffers selected-route output that still needs summary parsing or ordinary tool-step text filtering. A complete reasoning block at the safe buffered prefix is released in the provider's original order as soon as its matching `block-end` arrives, so downstream stream plugins such as reasoning-merge can consume it live. Text, tool frames, and usage still wait for the summary decision or `finish`. The selected route is therefore **partially pseudo-streaming**: consecutive reasoning blocks can display live, but no content after unresolved text may overtake that text, which would reorder output or leak ordinary tool-step prose.
 
 When the model misses it, the next step carries this reminder:
 

@@ -441,6 +441,33 @@ function hideToolStepText(chunks: readonly StreamChunk[]): StreamChunk[] {
   return output
 }
 
+function flushCompletedReasoningPrefix(state: StepState): StreamChunk[] {
+  // Only a contiguous leading run can leave early: a preceding text or tool
+  // frame may still need filtering, and emitting a later reasoning block would
+  // reorder the provider stream.
+  let end = 0
+  let reasoningIndex: number | undefined
+  for (let index = 0; index < state.deferred.length; index++) {
+    const chunk = state.deferred[index]
+    if (reasoningIndex === undefined) {
+      if (chunk.type !== 'block-start' || chunk.blockType !== 'reasoning') break
+      reasoningIndex = chunk.index
+      continue
+    }
+    if (chunk.type === 'reasoning-delta' && chunk.index === reasoningIndex) continue
+    if (chunk.type === 'block-end'
+      && chunk.index === reasoningIndex
+      && chunk.block.type === 'reasoning') {
+      end = index + 1
+      reasoningIndex = undefined
+      continue
+    }
+    break
+  }
+  if (end === 0) return []
+  return state.deferred.splice(0, end)
+}
+
 function isToolChunk(chunk: StreamChunk): boolean {
   return chunk.type === 'tool-call-delta' || (chunk.type === 'block-start' && chunk.blockType === 'tool-call') || (chunk.type === 'block-end' && chunk.block.type === 'tool-call')
 }
@@ -854,10 +881,12 @@ async function* transformStream(
         yield chunk
         continue
       }
-      // Hold every non-finish chunk, including reasoning and usage frames, until
-      // finish. This preserves the provider's original block order for downstream
-      // stream transforms such as reasoning-merge.
+      // Hold non-reasoning output until the summary decision is known, but release
+      // each complete reasoning block as soon as its block-end arrives. The
+      // emitted prefix is removed from deferred so finishState only processes
+      // chunks that may still need text filtering or summary parsing.
       state.deferred.push(chunk)
+      for (const reasoning of flushCompletedReasoningPrefix(state)) yield reasoning
       // A self-spinning step emits two complete action summaries without a
       // single tool call. Release the buffered text at once so the user can
       // see the spin and interrupt, and queue the plugin's own notice instead

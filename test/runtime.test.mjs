@@ -1482,6 +1482,109 @@ test('reasoning block frames stay ordered for downstream merging', async () => {
   assert.deepEqual(mergeReasoningBlocks(result), ['inspect the stream', 'then verify output'])
 })
 
+test('completed reasoning blocks are released before later chunks finish', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness, 'reasoning-immediate-release')
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const gate = deferred()
+  async function* source() {
+    yield { type: 'block-start', index: 0, blockType: 'reasoning' }
+    yield { type: 'reasoning-delta', index: 0, text: 'release this block' }
+    yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'release this block' } }
+    await gate.promise
+    yield { type: 'usage', inputTokens: 2, outputTokens: 3 }
+    yield finish()
+  }
+
+  const iterator = stream(mainStreamOptions(agent), () => source())[Symbol.asyncIterator]()
+  assert.deepEqual((await iterator.next()).value, { type: 'block-start', index: 0, blockType: 'reasoning' })
+  assert.deepEqual((await iterator.next()).value, { type: 'reasoning-delta', index: 0, text: 'release this block' })
+  assert.deepEqual((await iterator.next()).value, { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'release this block' } })
+
+  gate.resolve()
+  assert.deepEqual((await iterator.next()).value, { type: 'usage', inputTokens: 2, outputTokens: 3 })
+  assert.deepEqual((await iterator.next()).value, finish())
+  assert.equal((await iterator.next()).done, true)
+})
+
+test('a reasoning block waits for its matching block-end before release', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness, 'reasoning-matching-end')
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const gate = deferred()
+  async function* source() {
+    yield { type: 'block-start', index: 3, blockType: 'reasoning' }
+    yield { type: 'reasoning-delta', index: 3, text: 'do not close early' }
+    await gate.promise
+    yield { type: 'block-end', index: 3, block: { type: 'reasoning', text: 'do not close early' } }
+    yield finish()
+  }
+
+  const iterator = stream(mainStreamOptions(agent), () => source())[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  const early = await Promise.race([
+    pending.then(() => 'emitted'),
+    new Promise((resolve) => setImmediate(() => resolve('waiting'))),
+  ])
+  assert.equal(early, 'waiting')
+
+  gate.resolve()
+  assert.deepEqual((await pending).value, { type: 'block-start', index: 3, blockType: 'reasoning' })
+  assert.deepEqual((await iterator.next()).value, { type: 'reasoning-delta', index: 3, text: 'do not close early' })
+  assert.deepEqual((await iterator.next()).value, { type: 'block-end', index: 3, block: { type: 'reasoning', text: 'do not close early' } })
+  assert.deepEqual((await iterator.next()).value, finish())
+})
+
+test('a buffered text prefix prevents reasoning from being reordered', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness, 'reasoning-order-barrier')
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const gate = deferred()
+  const visible = 'answer before reasoning'
+  async function* source() {
+    yield textStart(0)
+    yield textDelta(visible, 0)
+    yield textEnd(visible, 0)
+    yield { type: 'block-start', index: 1, blockType: 'reasoning' }
+    yield { type: 'reasoning-delta', index: 1, text: 'must not overtake text' }
+    yield { type: 'block-end', index: 1, block: { type: 'reasoning', text: 'must not overtake text' } }
+    await gate.promise
+    yield finish()
+  }
+
+  const iterator = stream(mainStreamOptions(agent), () => source())[Symbol.asyncIterator]()
+  const pending = iterator.next()
+  const early = await Promise.race([
+    pending.then(() => 'emitted'),
+    new Promise((resolve) => setImmediate(() => resolve('waiting'))),
+  ])
+  assert.equal(early, 'waiting')
+
+  gate.resolve()
+  assert.deepEqual((await pending).value, textStart(0))
+  assert.deepEqual((await iterator.next()).value, textDelta(visible, 0))
+  assert.deepEqual((await iterator.next()).value, textEnd(visible, 0))
+  assert.deepEqual((await iterator.next()).value, { type: 'block-start', index: 1, blockType: 'reasoning' })
+  assert.deepEqual((await iterator.next()).value, { type: 'reasoning-delta', index: 1, text: 'must not overtake text' })
+  assert.deepEqual((await iterator.next()).value, { type: 'block-end', index: 1, block: { type: 'reasoning', text: 'must not overtake text' } })
+  assert.deepEqual((await iterator.next()).value, finish())
+})
+
 test('reasoning and tool frames preserve their interleaved order', async () => {
   const harness = makeHarness({
     models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
