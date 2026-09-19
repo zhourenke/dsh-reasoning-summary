@@ -95,7 +95,8 @@ Missing action summary: no <summary> tag was received in visible text — reason
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
-当模型在同一次输出里写出了**两个完整的 `<summary>` 标签、却依然没有发出任何工具调用**时，插件判定疑似空转，此时立刻放行本步后续的流式输出，并注入插件自己的提示：
+当同一次输出出现两个完整的 `<summary>` 标签却没有工具调用时，插件会判定疑似自旋：立即放行当前输出、向下一步排队 `[No tool call received]`，并让该 Session 进入自旋抑制。抑制期间已勾选路由的后续步骤都会透明预热，不注入本插件提示，也不解析或隐藏流；只有后续没有再次自旋、且完整成功的结构化工具步骤到达 `step/end` 后，才会解除抑制并在下一步恢复提示。
+
 
 ```text
 [No tool call received]

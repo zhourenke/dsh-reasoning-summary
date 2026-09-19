@@ -354,6 +354,25 @@ async function completeConcludedToolStep(harness, agent, { turn, step, summary, 
   return { chunks, output }
 }
 
+async function completeTransparentStep(harness, agent, { turn, step, chunks }) {
+  const stream = harness.listeners.get('llm/stream')
+  const output = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) output.push(chunk)
+  const text = textFrom(chunks)
+  harness.emitSessionEvent(agent.session, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: { turn, step, message: { content: [{ type: 'text', text }] } },
+  })
+  harness.emitSessionEvent(agent.session, {
+    type: 'step/end',
+    time: Date.now(),
+    data: { turn, step },
+  })
+  await flushMicrotasks()
+  return { chunks, output }
+}
+
 test('a cold selected route warms transparently after its first real tool step', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const harness = makeHarness({ models: [route], autoPrime: false })
@@ -1951,6 +1970,118 @@ test('two complete summaries without a tool call release the step and inject the
   assert.equal(relayEvents(agent.session).length, 0)
   assert.equal(relayMessages(agent.session).length, 0)
   assert.equal(harness.steered.length, 0)
+})
+
+test('spin suppression keeps later steps transparent until a non-spin tool succeeds', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
+  const harness = makeHarness({ models: [route] })
+  const agent = makeAgent(harness)
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+
+  await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  const spinChunks = [
+    textStart(0),
+    textDelta('<summary>first spin plan</summary>', 0),
+    textEnd('<summary>first spin plan</summary>', 0),
+    textStart(1),
+    textDelta('<summary>second spin plan</summary>', 1),
+    textEnd('<summary>second spin plan</summary>', 1),
+    finish(),
+  ]
+  const spinOutput = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(spinChunks))) spinOutput.push(chunk)
+  assert.deepEqual(spinOutput, spinChunks)
+  harness.emitSessionEvent(agent.session, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'spin released' }] } },
+  })
+  harness.emitSessionEvent(agent.session, {
+    type: 'step/end',
+    time: Date.now(),
+    data: { turn: 1, step: 1 },
+  })
+  await flushMicrotasks()
+  assert.equal(harness.injected.length, 1)
+  assert.match(harness.injected[0].content[0].text, /^\[No tool call received\]/)
+
+  const notice = agent.takeInbox()
+  const second = await admitRoute(harness, agent, {
+    ...route, turn: 1, step: 2, messages: notice,
+  })
+  assert.equal(second.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  const secondChunks = [textStart(), textDelta('transparent after spin'), textEnd('transparent after spin'), finish()]
+  const secondResult = await completeTransparentStep(harness, agent, {
+    turn: 1, step: 2, chunks: secondChunks,
+  })
+  assert.deepEqual(secondResult.output, secondChunks)
+
+  const third = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+  assert.equal(third.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  const thirdChunks = [
+    textStart(0),
+    textDelta('<summary>still spinning without a tool</summary>', 0),
+    textEnd('<summary>still spinning without a tool</summary>', 0),
+    textStart(1),
+    textDelta('<summary>still planning without a tool</summary>', 1),
+    textEnd('<summary>still planning without a tool</summary>', 1),
+    finish(),
+  ]
+  const thirdResult = await completeTransparentStep(harness, agent, {
+    turn: 1, step: 3, chunks: thirdChunks,
+  })
+  assert.deepEqual(thirdResult.output, thirdChunks)
+
+  const recovery = await admitRoute(harness, agent, { ...route, turn: 1, step: 4 })
+  assert.equal(recovery.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  const recoveredTool = await completeConcludedToolStep(harness, agent, {
+    turn: 1, step: 4, summary: 'a non-spin tool step clears suppression', callId: 'spin-recovery',
+  })
+  assert.deepEqual(recoveredTool.output, recoveredTool.chunks)
+  assert.equal(relayMessages(agent.session).length, 0)
+
+  const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 5 })
+  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+})
+
+test('a failed recovery tool step keeps spin suppression active', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
+  const harness = makeHarness({ models: [route] })
+  const agent = makeAgent(harness)
+  const stream = harness.listeners.get('llm/stream')
+
+  await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  const spinChunks = [
+    textStart(0),
+    textDelta('<summary>first failed plan</summary>', 0),
+    textEnd('<summary>first failed plan</summary>', 0),
+    textStart(1),
+    textDelta('<summary>second failed plan</summary>', 1),
+    textEnd('<summary>second failed plan</summary>', 1),
+    finish(),
+  ]
+  for await (const _chunk of stream(mainStreamOptions(agent), () => streamOf(spinChunks))) {}
+  harness.emitSessionEvent(agent.session, {
+    type: 'assistant/message',
+    time: Date.now(),
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'spin released' }] } },
+  })
+  harness.emitSessionEvent(agent.session, { type: 'step/end', time: Date.now(), data: { turn: 1, step: 1 } })
+  agent.takeInbox()
+
+  const failedRecovery = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
+  assert.equal(failedRecovery.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 2, callId: 'failed-recovery', error: true })
+
+  const stillSuppressed = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+  assert.equal(stillSuppressed.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+
+  await completeConcludedToolStep(harness, agent, {
+    turn: 1, step: 3, summary: 'the later recovery tool completed', callId: 'successful-recovery',
+  })
+  const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 4 })
+  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
 })
 
 test('summaries beside a real tool call do not trigger the spin release', async () => {

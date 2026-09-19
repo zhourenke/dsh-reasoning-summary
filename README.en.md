@@ -95,7 +95,8 @@ When a non-failed stream ends before the closing tag, what arrived is treated as
 Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.
 ```
 
-When one output carries **two complete `<summary>` tags but still no tool call**, the plugin judges the step to be spinning and immediately releases the step's remaining stream, while queueing the plugin's own notice:
+When one output carries two complete `<summary>` tags but no tool call, the plugin judges the step to be spinning: it releases the current output immediately, queues `[No tool call received]` for the next step, and marks the Session as spin-suppressed. While suppression is active, later steps on selected routes remain transparent warm-up steps: the plugin instruction is omitted and the stream is not parsed or hidden. Suppression is cleared only after a later structured-tool step completes successfully at `step/end` without spinning; the instruction returns on the following step.
+
 
 ```text
 [No tool call received]

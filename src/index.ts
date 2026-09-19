@@ -87,6 +87,7 @@ interface StepState {
   readonly step: number
   readonly signal?: AbortSignal
   readonly continuationState: TurnContinuationState
+  readonly runtime: RuntimeSessionState
   /** Active until the step completes, errors, or the Agent is disposed. */
   active: boolean
   readonly deferred: StreamChunk[]
@@ -128,6 +129,8 @@ interface RuntimeWarmupStep {
   sawToolCall: boolean
   assistantCompleted: boolean
   toolCallAt?: number
+  /** True when this logical step entered the spin-release path. */
+  spinDetected: boolean
   toolCallIds: Set<string>
   toolResultIds: Set<string>
   anonymousToolCalls: number
@@ -139,6 +142,7 @@ interface RuntimeWarmupStep {
 interface RuntimeToolSnapshot {
   route?: string
   at?: number
+  spinSuppressed: boolean
 }
 
 interface RuntimeCommittedToolStep {
@@ -156,6 +160,8 @@ interface RuntimeSessionState {
   /** Route and time of the most recent non-interrupted tool step. */
   lastToolRoute?: string
   lastToolAt?: number
+  /** Suppress the plugin prompt until a later non-spin tool step succeeds. */
+  spinSuppressed?: boolean
   committed?: RuntimeCommittedToolStep
   pending?: RuntimeWarmupStep
 }
@@ -167,6 +173,10 @@ function warmupExpired(lastToolAt: number | undefined, now: number): boolean {
 }
 
 function needsWarmup(state: RuntimeSessionState, route: string, now = Date.now()): boolean {
+  // A released spin keeps the prompt disabled until a later non-spin tool step
+  // completes successfully. This is independent of the ordinary route/time
+  // checks below and therefore also survives a route that was already warm.
+  if (state.spinSuppressed === true) return true
   // A route switch always starts a new warm-up, even when the route was ready
   // earlier in this Session. A successful tool step is useful warm-up evidence
   // regardless of whether the route was selected when that step entered.
@@ -593,6 +603,9 @@ function injectNextStep(state: StepState, message: UserMessage, allowClosedStep 
 function releaseSpinStep(state: StepState): void {
   if (state.spinReleased) return
   state.spinReleased = true
+  state.runtime.spinSuppressed = true
+  const pending = state.runtime.pending
+  if (pending?.turn === state.turn && pending.step === state.step) pending.spinDetected = true
   state.finalized = true
   injectNextStep(state, makeSpinNotice())
 }
@@ -1003,6 +1016,7 @@ export function apply(ctx: Context): void {
     if (committed?.step.turn !== turn || committed.step.step !== step) return
     runtime.lastToolRoute = committed.previous.route
     runtime.lastToolAt = committed.previous.at
+    runtime.spinSuppressed = committed.previous.spinSuppressed
     runtime.committed = undefined
   }
   const resetRuntimePendingAttempt = (agent: Agent, turn: number, step: number): void => {
@@ -1057,6 +1071,7 @@ export function apply(ctx: Context): void {
       turn: payload.turn,
       step: payload.step,
       signal: payload.signal,
+      spinDetected: false,
       entered: false,
       sawToolCall: false,
       assistantCompleted: false,
@@ -1097,6 +1112,7 @@ export function apply(ctx: Context): void {
       step: payload.step,
       signal: payload.signal,
       continuationState,
+      runtime,
       active: true,
       deferred: [],
       toolIndexes: new Set<number>(),
@@ -1205,9 +1221,11 @@ export function apply(ctx: Context): void {
           const previous: RuntimeToolSnapshot = {
             route: runtime.lastToolRoute,
             at: runtime.lastToolAt,
+            spinSuppressed: runtime.spinSuppressed === true,
           }
           runtime.lastToolRoute = pending.route
           runtime.lastToolAt = pending.toolCallAt ?? eventTime(event)
+          if (!pending.spinDetected) runtime.spinSuppressed = false
           runtime.committed = { step: pending, previous }
         }
         runtime.pending = undefined
