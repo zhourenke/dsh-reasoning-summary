@@ -827,25 +827,23 @@ async function* transformStream(
         if (chunk.type === 'tool-call-delta') recordToolCallId(state, chunk.id)
         else if (chunk.type === 'block-end' && chunk.block.type === 'tool-call') recordToolCallId(state, chunk.block.id)
       }
-      if (chunk.type === 'reasoning-delta' || chunk.type === 'usage' || chunk.type === 'finish') {
-        if (chunk.type === 'finish') {
-          // Provider errors and aborts are handled by the agent loop's retry or
-          // interruption path. Do not manufacture a relay for a failed attempt.
-          if (chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted') {
-            state.continuationBlocked = chunk.reason.kind === 'max-tokens'
-            for (const deferred of finishState(state, false, chunk.reason.kind === 'max-tokens')) yield deferred
-          } else {
-            state.continuationBlocked = true
-            state.finalized = true
-            // A failed attempt must not create a relay, but an already-emitted
-            // tool call must not make its buffered ordinary prose visible.
-            // Keep non-text chunks and the provider finish reason intact.
-            const output = state.sawToolCall
-              ? hideToolStepText(state.deferred)
-              : state.deferred
-            for (const deferred of output) yield deferred
-            state.deferred.length = 0
-          }
+      if (chunk.type === 'finish') {
+        // Provider errors and aborts are handled by the agent loop's retry or
+        // interruption path. Do not manufacture a relay for a failed attempt.
+        if (chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted') {
+          state.continuationBlocked = chunk.reason.kind === 'max-tokens'
+          for (const deferred of finishState(state, false, chunk.reason.kind === 'max-tokens')) yield deferred
+        } else {
+          state.continuationBlocked = true
+          state.finalized = true
+          // A failed attempt must not create a relay, but an already-emitted
+          // tool call must not make its buffered ordinary prose visible.
+          // Keep non-text chunks and the provider finish reason intact.
+          const output = state.sawToolCall
+            ? hideToolStepText(state.deferred)
+            : state.deferred
+          for (const deferred of output) yield deferred
+          state.deferred.length = 0
         }
         yield chunk
         continue
@@ -856,8 +854,9 @@ async function* transformStream(
         yield chunk
         continue
       }
-      // Hold text and tool-call chunks until finish so the first summary can be
-      // removed from the assistant output without corrupting deltas.
+      // Hold every non-finish chunk, including reasoning and usage frames, until
+      // finish. This preserves the provider's original block order for downstream
+      // stream transforms such as reasoning-merge.
       state.deferred.push(chunk)
       // A self-spinning step emits two complete action summaries without a
       // single tool call. Release the buffered text at once so the user can

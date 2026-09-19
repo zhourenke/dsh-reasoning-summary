@@ -1,4 +1,4 @@
-import test from 'node:test'
+﻿import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Session } from '@deepseek-ai/dsh-session'
@@ -214,6 +214,26 @@ function finish(kind = 'stop') {
 
 function textFrom(chunks) {
   return chunks.filter((chunk) => chunk.type === 'text-delta').map((chunk) => chunk.text).join('')
+}
+
+function mergeReasoningBlocks(chunks) {
+  const blocks = []
+  let current
+  for (const chunk of chunks) {
+    if (chunk.type === 'block-start' && chunk.blockType === 'reasoning') {
+      assert.equal(current, undefined, 'reasoning blocks must close before the next block starts')
+      current = ''
+    } else if (chunk.type === 'reasoning-delta') {
+      assert.notEqual(current, undefined, 'reasoning delta must follow its block-start')
+      current += chunk.text
+    } else if (chunk.type === 'block-end' && chunk.block.type === 'reasoning') {
+      assert.notEqual(current, undefined, 'reasoning block-end must follow its block-start')
+      blocks.push(current)
+      current = undefined
+    }
+  }
+  assert.equal(current, undefined, 'reasoning blocks must be complete')
+  return blocks
 }
 
 function appendAssistant(agent, turn, step, content) {
@@ -1432,6 +1452,102 @@ test('the settings card follows official plugin-card chrome and exposes model ro
     assert.match(source, /\.rs-discard:focus-visible, \.rs-save:focus-visible \{[^}]*outline:\s*2px solid var\(--dsw-alias-brand-primary\);[^}]*outline-offset:\s*1px/)
     assert.match(source, /模型目录中不可用且已启用的条目仍会保留显示。/)
     assert.match(source, /Enabled entries that are unavailable in the model catalog remain visible\./)
+  }
+})
+
+test('reasoning block frames stay ordered for downstream merging', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness, 'reasoning-order')
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const chunks = [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 0, text: 'inspect ' },
+    { type: 'reasoning-delta', index: 0, text: 'the stream' },
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'inspect the stream' } },
+    { type: 'block-start', index: 1, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 1, text: 'then verify output' },
+    { type: 'block-end', index: 1, block: { type: 'reasoning', text: 'then verify output' } },
+    { type: 'usage', inputTokens: 4, outputTokens: 6 },
+    finish(),
+  ]
+  const result = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) result.push(chunk)
+
+  assert.deepEqual(result, chunks)
+  assert.deepEqual(mergeReasoningBlocks(result), ['inspect the stream', 'then verify output'])
+})
+
+test('reasoning and tool frames preserve their interleaved order', async () => {
+  const harness = makeHarness({
+    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  })
+  const agent = makeAgent(harness, 'reasoning-tool-order')
+  const preStep = harness.listeners.get('agent/pre-step')
+  const stream = harness.listeners.get('llm/stream')
+  const callId = 'ordered-tool-call'
+  await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+  const chunks = [
+    { type: 'block-start', index: 0, blockType: 'reasoning' },
+    { type: 'reasoning-delta', index: 0, text: 'prepare the call' },
+    { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'prepare the call' } },
+    textStart(1),
+    textDelta('<summary>prepared the call</summary>', 1),
+    textEnd('<summary>prepared the call</summary>', 1),
+    { type: 'block-start', index: 2, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 2, id: callId, name: 'read_file', argumentsDelta: '{}' },
+    { type: 'block-end', index: 2, block: { type: 'tool-call', id: callId, name: 'read_file', arguments: '{}' } },
+    { type: 'usage', inputTokens: 5, outputTokens: 7 },
+    finish(),
+  ]
+  const result = []
+  for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) result.push(chunk)
+
+  assert.deepEqual(result.filter((chunk) => chunk.type !== 'text-delta' && !(chunk.type === 'block-start' && chunk.blockType === 'text') && !(chunk.type === 'block-end' && chunk.block.type === 'text')), [
+    chunks[0], chunks[1], chunks[2], chunks[6], chunks[7], chunks[8], chunks[9], chunks[10],
+  ])
+  assert.equal(result.some((chunk) => chunk.type === 'text-delta'), false)
+  assert.equal(result.findIndex((chunk) => chunk.type === 'reasoning-delta'), 1)
+  assert.equal(result.findIndex((chunk) => chunk.type === 'tool-call-delta'), 4)
+})
+
+test('error and aborted finish preserve buffered non-text order while hiding text', async () => {
+  for (const kind of ['error', 'aborted']) {
+    const harness = makeHarness({
+      models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+    })
+    const agent = makeAgent(harness, `ordered-failure-${kind}`)
+    const preStep = harness.listeners.get('agent/pre-step')
+    const stream = harness.listeners.get('llm/stream')
+    const callId = `ordered-failure-call-${kind}`
+    await preStep({ agent, turn: 1, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+
+    const chunks = [
+      { type: 'block-start', index: 0, blockType: 'reasoning' },
+      { type: 'reasoning-delta', index: 0, text: 'explain before calling' },
+      { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'explain before calling' } },
+      textStart(1),
+      textDelta('hidden provider prose', 1),
+      textEnd('hidden provider prose', 1),
+      { type: 'block-start', index: 2, blockType: 'tool-call' },
+      { type: 'tool-call-delta', index: 2, id: callId, name: 'read_file', argumentsDelta: '{}' },
+      { type: 'block-end', index: 2, block: { type: 'tool-call', id: callId, name: 'read_file', arguments: '{}' } },
+      { type: 'usage', inputTokens: 5, outputTokens: 7 },
+      finish(kind),
+    ]
+    const result = []
+    for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) result.push(chunk)
+
+    assert.equal(textFrom(result), '')
+    assert.deepEqual(result.filter((chunk) => chunk.type !== 'finish' && !(chunk.type === 'block-start' && chunk.blockType === 'text') && !(chunk.type === 'block-end' && chunk.block.type === 'text')), [
+      chunks[0], chunks[1], chunks[2], chunks[6], chunks[7], chunks[8], chunks[9],
+    ])
+    assert.equal(result.at(-1).reason.kind, kind)
   }
 })
 

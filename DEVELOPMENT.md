@@ -143,6 +143,8 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **2026-09 追加：缓冲不再"永远等到 finish"。** 实测某个 Codex 系 Provider 组合会把工具调用写成 claude-code 文本语法（`to=... (commentary) json {}`），DSH 不执行，模型于是在同一次输出里反复"思考→写摘要→重写坏调用→再思考"，直到输出预算耗尽（单步 output 可达 1.4–2 万 token、耗时 4–7 分钟，Provider 侧没有第二次请求）。这类自旋步会在同一输出内产生多个完整 `<summary>` 标签却零工具调用。插件据此判定疑似空转（`SPIN_RELEASE_SUMMARIES = 2`，最近邻配对计数）：立即放行本步已缓冲文本（用户可实时看到错误并中断止损），把本轮标记 finalized（避免 finish 再次走 relay/continuation 路径），向后续上下文注入插件自己的提示（`[No tool call received]`，**不是**模型的未执行摘要），并在 Session 运行时状态中置位自旋抑制。抑制期间后续已勾选步骤强制透明预热；只有没有再次触发自旋且完整成功的工具步骤到达 `step/end` 后才清除，下一步恢复提示。回滚快照会在该工具步骤后续报错时恢复抑制状态。放行只发生在 `sawToolCall === false` 的步骤，带真实工具调用的步骤完全不受影响；TTL 兜底留作后续，视效果再定。
 
+`transformStream` 必须把所有非 `finish` chunk（包括 `reasoning-delta`、`usage`、`block-start`、`block-end`、工具帧和文本帧）统一按接收顺序放入 `state.deferred`。如果只缓存文本/工具帧而直接 yield reasoning 或 usage，后续 `reasoning-merge` 会先收到 delta、再收到 block 边界，误判 reasoning block 不相邻。正常 finish 统一从缓冲区处理；自旋达到两个完整摘要时仍立即 flush 并切换直通，error/aborted finish 仍先对缓冲区执行工具文本隐藏再保留非文本顺序。
+
 ### 14. 自旋判据只用插件自己的契约，不抓模型的外部特征
 
 第一版方案是检测可见文本里的 `to=functions.pwsh`、`(commentary)`、`json {}` 这类 claude-code 文本工具调用痕迹。它被否掉的原因是**判据的归属**：这些字符串由模型与 Provider 定义，不在插件控制范围内，换模型、换 Provider、换版本就可能变样或消失，而失效是**静默的**——不报错，只是再也匹配不上，插件从"能识别"退化成"从不识别"，没有任何信号提示。
