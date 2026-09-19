@@ -65,7 +65,7 @@ To confirm it is working: after the last tool call of each step, the interface s
 
 ## What the plugin asks the model to do
 
-The plugin registers this requirement as a **dynamic runtime-context snapshot** for selected routes: **before calling a tool, write one action summary as visible text**, in a literal tag:
+The plugin appends this requirement as a **request-local ordinary context message** to the end of `decision.messages` returned by `agent/pre-step` when the selected route is warm: **before calling a tool, write one action summary as visible text**, in a literal tag:
 
 ```xml
 <summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
@@ -73,13 +73,11 @@ The plugin registers this requirement as a **dynamic runtime-context snapshot** 
 
 After the summary, DSH must receive a structured DSH tool-call block for the tool to execute; writing a tool invocation as ordinary visible text does not execute it. The summary should name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.
 
-### Runtime snapshots and caching
+### Ordinary context messages and caching
 
-The plugin calls `systemPrompt.context()` once at load time to register a fixed slot; it no longer registers a `systemPrompt.section()`. On each Agent Loop assembly, the waterfall rewrites that slot's `contexts` entry from the final Provider/Model selection and current warm-up state. DSH's `RuntimeContextProjection` then records the assembled value as a `user/message` runtime snapshot with `source.form: 'snapshot'`, and deduplicates by the complete snapshot text. Identical content is not appended repeatedly and does not repeatedly rewrite a `system/message`.
+The protocol prompt is no longer registered through `systemPrompt.context()` and `system-prompt/assemble` no longer rewrites `contexts`. It therefore does not create a `source.form: 'snapshot'` runtime snapshot or repeated system-prompt mutations. It is appended only for a selected, already-warm step, at the end of `decision.messages`; the message has no `form`, so it is a request-local ordinary plugin user message. The plugin does not call `agent.inject()`, and this message is not automatically written to durable session history, relay history, or the inbox. Existing claimed user messages and durable relays retain their order, with the protocol prompt after them.
 
-This is not a guarantee of zero-cost caching. The first snapshot insertion, a transition from the instruction to an empty snapshot, or a re-entry after a route switch changes the model-visible context once; whether the Provider hits its own prefix cache still depends on its cache key and history projection. Once the same route and warm-up state remain stable, later assemblies produce the same snapshot and do not create per-step system-prompt mutations. To keep the instruction completely inactive on unselected routes, a route switch still requires one context clear or rewrite.
-
-The snapshot is model-visible `user/message` content placed by the Agent Loop after the currently claimed user messages, not a `system/message`. That is the compatibility boundary accepted here in exchange for avoiding repeated system-prompt rewrites while retaining exact route gating.
+This limits the change to the end of the current request: the stable history prefix is not reshaped on every assembly by replacing a snapshot slot. Provider prefix-cache behavior still depends on the provider's cache key and request projection, so this is not an absolute zero-cost caching guarantee. Disabled and warming routes receive no protocol message; model and settings changes apply to the next admission.
 
 Only **visible text** counts: a summary that lives in reasoning / thinking is treated as missing. It also has to come before the first tool call. None of this text — **including the summary tag itself** — is shown in the interface.
 

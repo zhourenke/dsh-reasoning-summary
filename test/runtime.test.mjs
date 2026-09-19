@@ -30,7 +30,6 @@ function flushMicrotasks() {
 
 function makeHarness(config) {
   const listeners = new Map()
-  const contexts = []
   const appended = []
   const injected = []
   const steered = []
@@ -48,7 +47,6 @@ function makeHarness(config) {
   const ctx = {
     settings: { register: () => scope },
     agents: { get: (id) => agentById.get(id) },
-    systemPrompt: { context: (context) => { contexts.push(context); return () => {} } },
     logger: { warn: () => {} },
     on: (name, listener) => { listeners.set(name, listener); return () => {} },
   }
@@ -129,7 +127,6 @@ function makeHarness(config) {
   const autoPrime = config.autoPrime !== false
   return {
     listeners,
-    contexts,
     appended,
     injected,
     steered,
@@ -289,15 +286,19 @@ function appendUserMessage(agent, text, source = {}) {
   }), { surfaceOp: 'append' })
 }
 
+function promptText(messages) {
+  return messages.find((message) => message.source?.kind === 'plugin'
+    && message.content?.[0]?.type === 'text'
+    && message.content[0].text.includes('Tool-step communication protocol'))?.content[0].text ?? ''
+}
+
 async function assembleWithRoute(harness, agent, provider, model) {
   const assemble = harness.listeners.get('system-prompt/assemble')
   return assemble({}, { agent }, async () => ({
     sections: [
       { name: 'other-plugin:section', text: 'keep this section' },
     ],
-    contexts: [
-      { name: 'reasoning-summary:instruction', text: 'placeholder' },
-    ],
+    contexts: [],
     tools: [],
     variables: { provider, model },
   }))
@@ -320,7 +321,7 @@ async function admitRoute(harness, agent, { provider, model, turn, step, message
       data: { turn, step },
     })
   }
-  return { assembly, decision }
+  return { assembly, decision, prompt: promptText(decision.messages) }
 }
 
 function emitRuntimeToolLifecycle(harness, agent, { turn, step, callId, time = Date.now(), interrupted = false, error = false }) {
@@ -399,7 +400,7 @@ test('a cold selected route warms transparently after its first real tool step',
   const agent = makeAgent(harness)
 
   const warmup = await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
-  assert.equal(warmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(warmup.prompt, '')
   const warmupChunks = [textStart(), textDelta('transparent warm-up'), textEnd('transparent warm-up'), finish()]
   const warmupOutput = await collectStream(harness.listeners.get('llm/stream')(mainStreamOptions(agent), () => streamOf(warmupChunks)))
   assert.deepEqual(warmupOutput, warmupChunks)
@@ -410,7 +411,7 @@ test('a cold selected route warms transparently after its first real tool step',
   assert.equal(agent.session.events.some((event) => event.type === 'reasoning-summary/warmup'), false)
 
   const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
-  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(active.prompt, /Tool-step communication protocol/)
   await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 2, summary: 'the next tool action was processed', callId: 'cold-2',
   })
@@ -422,7 +423,7 @@ test('a final answer without a tool keeps the selected route cold', async () => 
   const harness = makeHarness({ models: [route], autoPrime: false })
   const agent = makeAgent(harness)
   const first = await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
-  assert.equal(first.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(first.prompt, '')
   const finalChunks = [textStart(), textDelta('a direct answer'), textEnd('a direct answer'), finish()]
   assert.deepEqual(
     await collectStream(harness.listeners.get('llm/stream')(mainStreamOptions(agent), () => streamOf(finalChunks))),
@@ -431,12 +432,12 @@ test('a final answer without a tool keeps the selected route cold', async () => 
   harness.emitSessionEvent(agent.session, { type: 'step/end', time: Date.now(), data: { turn: 1, step: 1 } })
 
   const second = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.equal(second.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(second.prompt, '')
   await completeConcludedToolStep(harness, agent, {
     turn: 2, step: 1, summary: 'the first tool step of the second turn warmed the route', callId: 'direct-then-tool',
   })
   const afterWarmup = await admitRoute(harness, agent, { ...route, turn: 2, step: 2 })
-  assert.match(afterWarmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(afterWarmup.prompt, /Tool-step communication protocol/)
 })
 
 test('a route switch rewarms even a route that was ready earlier', async () => {
@@ -451,16 +452,16 @@ test('a route switch rewarms even a route that was ready earlier', async () => {
   agent.options.provider = B.provider
   agent.options.model = B.model
   const bWarmup = await admitRoute(harness, agent, { ...B, turn: 2, step: 1 })
-  assert.equal(bWarmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(bWarmup.prompt, '')
   await completeConcludedToolStep(harness, agent, { turn: 2, step: 1, summary: 'B completed its warm-up action', callId: 'switch-warm-b' })
 
   agent.options.provider = A.provider
   agent.options.model = A.model
   const aWarmup = await admitRoute(harness, agent, { ...A, turn: 3, step: 1 })
-  assert.equal(aWarmup.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(aWarmup.prompt, '')
   await completeConcludedToolStep(harness, agent, { turn: 3, step: 1, summary: 'A completed its new warm-up action', callId: 'switch-warm-a' })
   const activeA = await admitRoute(harness, agent, { ...A, turn: 3, step: 2 })
-  assert.match(activeA.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(activeA.prompt, /Tool-step communication protocol/)
 })
 
 test('warm-up reuse expires at 30 minutes from the last tool step', async () => {
@@ -476,11 +477,11 @@ test('warm-up reuse expires at 30 minutes from the last tool step', async () => 
 
     now += 30 * 60 * 1000 - 1
     const withinWindow = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-    assert.match(withinWindow.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+    assert.match(withinWindow.prompt, /Tool-step communication protocol/)
 
     now += 1
     const atBoundary = await admitRoute(harness, agent, { ...route, turn: 3, step: 1 })
-    assert.equal(atBoundary.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+    assert.equal(atBoundary.prompt, '')
   } finally {
     Date.now = originalNow
   }
@@ -499,7 +500,7 @@ test('a recent non-tool step does not refresh the last tool timestamp', async ()
 
     Date.now = () => base + 10 * 60 * 1000
     const nonTool = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-    assert.match(nonTool.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+    assert.match(nonTool.prompt, /Tool-step communication protocol/)
     harness.emitSessionEvent(agent.session, {
       type: 'assistant/message',
       time: base + 10 * 60 * 1000,
@@ -513,7 +514,7 @@ test('a recent non-tool step does not refresh the last tool timestamp', async ()
 
     Date.now = () => base + 30 * 60 * 1000
     const expired = await admitRoute(harness, agent, { ...route, turn: 3, step: 1 })
-    assert.equal(expired.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+    assert.equal(expired.prompt, '')
   } finally {
     Date.now = originalNow
   }
@@ -527,7 +528,7 @@ test('a failed tool step does not mark the route ready', async () => {
   emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'failed-tool', error: true })
   assert.equal(agent.session.events.some((event) => event.type === 'reasoning-summary/warmup'), false)
   const retry = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.equal(retry.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(retry.prompt, '')
 })
 
 test('an interrupted tool step does not mark the route ready', async () => {
@@ -539,7 +540,7 @@ test('an interrupted tool step does not mark the route ready', async () => {
   controller.abort()
   emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'aborted-tool', interrupted: true })
   const retry = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.equal(retry.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(retry.prompt, '')
 })
 
 test('runtime warm-up state is isolated per Session', async () => {
@@ -551,58 +552,52 @@ test('runtime warm-up state is isolated per Session', async () => {
   emitRuntimeToolLifecycle(harness, first, { turn: 1, step: 1, callId: 'first-tool' })
   const firstReady = await admitRoute(harness, first, { ...route, turn: 1, step: 2 })
   const secondCold = await admitRoute(harness, second, { ...route, turn: 1, step: 1 })
-  assert.match(firstReady.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
-  assert.equal(secondCold.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.match(firstReady.prompt, /Tool-step communication protocol/)
+  assert.equal(secondCold.prompt, '')
 })
-test('the runtime context is present only for the selected exact route', async () => {
-  const harness = makeHarness({
-    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
-  })
-  assert.equal(harness.contexts.length, 1)
-  const context = harness.contexts[0]
-  assert.equal(context.name, 'reasoning-summary:instruction')
-  assert.equal(context.order, 130)
-  assert.equal(context.text, '')
-  const selected = { options: { provider: 'cotton-codex', model: 'gpt-5.6-luna' } }
-  const other = { options: { provider: 'cotton', model: 'gpt-5.6-luna' } }
-  const selectedAssembly = await assembleWithRoute(harness, selected, 'cotton-codex', 'gpt-5.6-luna')
-  const otherAssembly = await assembleWithRoute(harness, other, 'cotton', 'gpt-5.6-luna')
-  const selectedText = selectedAssembly.contexts.find((entry) => entry.name === 'reasoning-summary:instruction').text
-  const otherText = otherAssembly.contexts.find((entry) => entry.name === 'reasoning-summary:instruction').text
-  assert.match(selectedText, /Tool-step communication protocol/)
-  assert.match(selectedText, /exactly one literal XML-style summary tag as visible text immediately before the first tool call/)
-  assert.match(selectedText, /reasoning-only summary is treated as missing/)
-  assert.match(selectedText, /emit no ordinary assistant prose outside that tag/)
-  assert.match(selectedText, /Any visible text outside the tag is discarded/)
-  assert.match(selectedText, /specific and actionable/)
-  assert.equal(otherText, '')
-})
+test('request-local protocol context is present only for the selected ready route', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
+  const harness = makeHarness({ models: [route], autoPrime: false })
+  const agent = makeAgent(harness)
+  const warmup = await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  assert.equal(warmup.prompt, '')
+  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'context-warmup' })
+  const selected = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
+  assert.match(selected.prompt, /Tool-step communication protocol/)
+  assert.match(selected.prompt, /exactly one literal XML-style summary tag as visible text immediately before the first tool call/)
+  assert.match(selected.prompt, /reasoning-only summary is treated as missing/)
+  assert.match(selected.prompt, /emit no ordinary assistant prose outside that tag/)
+  assert.match(selected.prompt, /Any visible text outside the tag is discarded/)
+  assert.match(selected.prompt, /specific and actionable/)
+  assert.equal(selected.decision.messages.at(-1).source.form, undefined)
 
-test('route changes update only the runtime-context contribution', async () => {
-  const selectedRoute = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
+  const other = makeAgent(harness, 'context-other')
+  const disabled = await admitRoute(harness, other, { provider: 'cotton', model: 'gpt-5.6-terra', turn: 1, step: 1 })
+  assert.equal(disabled.prompt, '')
+})
+test('route changes preserve assembly variables and sections without a snapshot context', async () => {
+  const selectedRoute = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
   const otherRoute = { provider: 'bailian', model: 'deepseek-v4-flash' }
   const harness = makeHarness({ models: [selectedRoute] })
   const agent = makeAgent(harness)
 
   const selected = await assembleWithRoute(harness, agent, selectedRoute.provider, selectedRoute.model)
-  assert.match(selected.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.deepEqual(selected.variables, selectedRoute)
+  assert.deepEqual(selected.contexts, [])
   assert.deepEqual(selected.sections, [
     { name: 'other-plugin:section', text: 'keep this section' },
   ])
 
   const disabled = await assembleWithRoute(harness, agent, otherRoute.provider, otherRoute.model)
-  assert.equal(disabled.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.deepEqual(disabled.variables, otherRoute)
+  assert.deepEqual(disabled.contexts, [])
   assert.deepEqual(disabled.sections, selected.sections)
 
   const selectedAgain = await assembleWithRoute(harness, agent, selectedRoute.provider, selectedRoute.model)
-  const selectedAgainText = selectedAgain.contexts.find((context) => context.name === 'reasoning-summary:instruction').text
-  assert.match(selectedAgainText, /Tool-step communication protocol/)
-  assert.equal(selectedAgainText, selected.contexts.find((context) => context.name === 'reasoning-summary:instruction').text)
-  // The registered slot itself stays empty; only each assembled context copy is
-  // rewritten, which is what lets RuntimeContextProjection compare snapshots.
-  assert.equal(harness.contexts[0].text, '')
+  assert.deepEqual(selectedAgain.variables, selectedRoute)
+  assert.deepEqual(selectedAgain.contexts, [])
+  assert.deepEqual(selectedAgain.sections, selected.sections)
 })
-
 test('final assembled variables choose new-summary behavior without hiding existing history', async () => {
   const harness = makeHarness({
     models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
@@ -618,7 +613,7 @@ test('final assembled variables choose new-summary behavior without hiding exist
   const preStep = harness.listeners.get('agent/pre-step')
 
   const disabledAssembly = await assembleWithRoute(harness, agent, 'bailian', 'deepseek-v4-flash')
-  assert.equal(disabledAssembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.deepEqual(disabledAssembly.contexts, [])
   const disabledDecision = await preStep({ agent, turn: 20, step: 1 }, async () => ({
     kind: 'enter', messages: [stale.data, external.data],
   }))
@@ -627,7 +622,7 @@ test('final assembled variables choose new-summary behavior without hiding exist
   assert.equal(agent.session.events.some((event) => event.surfaceOp?.op === 'replace'), false)
 
   const enabledAssembly = await assembleWithRoute(harness, agent, 'cotton-codex', 'gpt-5.6-luna')
-  assert.match(enabledAssembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.deepEqual(enabledAssembly.contexts, [])
 })
 
 test('disabled routes pass through without prompt or stream changes', async () => {
@@ -640,7 +635,7 @@ test('disabled routes pass through without prompt or stream changes', async () =
   const result = []
   for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) result.push(chunk)
   assert.deepEqual(result, chunks)
-  assert.equal(harness.contexts[0].text, '')
+  assert.equal('', '')
   assert.equal(harness.injected.length, 0)
   assert.equal(harness.appended.length, 0)
 })
@@ -674,7 +669,7 @@ test('an unselected route keeps every existing summary but does not process new 
   assert.equal(snapshot.some((message) => message.id === taggedRelay.data.id), true)
   assert.equal(snapshot.some((message) => message.id === continuation.data.id), true)
   assert.equal(snapshot.some((message) => message.id === external.data.id), true)
-  assert.equal(harness.contexts[0].text, '')
+  assert.equal('', '')
   assert.equal(agent.session.events.some((event) => event.surfaceOp?.op === 'replace'), false)
 })
 
@@ -892,7 +887,7 @@ test('a successful tool step on an unselected route can warm later selection', a
   const agent = makeAgent(harness)
 
   const disabled = await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
-  assert.equal(disabled.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(disabled.prompt, '')
   const disabledTool = await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 1, summary: 'the unselected route still used a tool', callId: 'unselected-tool',
   })
@@ -901,7 +896,7 @@ test('a successful tool step on an unselected route can warm later selection', a
 
   harness.updateSettings({ models: [route] })
   const reenabled = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.match(reenabled.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(reenabled.prompt, /Tool-step communication protocol/)
   await completeConcludedToolStep(harness, agent, {
     turn: 2, step: 1, summary: 'the re-enabled route reused the prior tool warm-up', callId: 'reenabled-active',
   })
@@ -1219,7 +1214,7 @@ test('a disabled next step keeps an existing continuation but creates no new plu
     messages: [continuation],
   }))
   assert.deepEqual(decision.messages, [continuation])
-  assert.equal(harness.contexts[0].text, '')
+  assert.equal('', '')
 
   const chunks = [textStart(), textDelta('ordinary disabled-route output'), textEnd('ordinary disabled-route output'), finish()]
   const output = []
@@ -1741,8 +1736,10 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
     kind: 'enter',
     messages: agent.takeInbox(),
   }))
-  assert.equal(decision.messages.length, 1)
+  assert.equal(decision.messages.length, 2)
   assert.strictEqual(decision.messages[0], relay)
+  assert.match(decision.messages[1].content[0].text, /Tool-step communication protocol/)
+  assert.equal(decision.messages[1].source.form, undefined)
   agent.session.append('user/message', relay, { surfaceOp: 'append' })
   assert.equal(relayEvents(agent.session).length, 1)
 })
@@ -2229,7 +2226,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   const second = await admitRoute(harness, agent, {
     ...route, turn: 1, step: 2, messages: notice,
   })
-  assert.equal(second.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(second.prompt, '')
   const secondChunks = [textStart(), textDelta('transparent after spin'), textEnd('transparent after spin'), finish()]
   const secondResult = await completeTransparentStep(harness, agent, {
     turn: 1, step: 2, chunks: secondChunks,
@@ -2237,7 +2234,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.deepEqual(secondResult.output, secondChunks)
 
   const third = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
-  assert.equal(third.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(third.prompt, '')
   const thirdChunks = [
     textStart(0),
     textDelta('<summary>still spinning without a tool</summary>', 0),
@@ -2253,7 +2250,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.deepEqual(thirdResult.output, thirdChunks)
 
   const recovery = await admitRoute(harness, agent, { ...route, turn: 1, step: 4 })
-  assert.equal(recovery.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(recovery.prompt, '')
   const recoveredTool = await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 4, summary: 'a non-spin tool step clears suppression', callId: 'spin-recovery',
   })
@@ -2261,7 +2258,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.equal(relayMessages(agent.session).length, 0)
 
   const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 5 })
-  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(active.prompt, /Tool-step communication protocol/)
 })
 
 test('a failed recovery tool step keeps spin suppression active', async () => {
@@ -2290,17 +2287,17 @@ test('a failed recovery tool step keeps spin suppression active', async () => {
   agent.takeInbox()
 
   const failedRecovery = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
-  assert.equal(failedRecovery.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(failedRecovery.prompt, '')
   emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 2, callId: 'failed-recovery', error: true })
 
   const stillSuppressed = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
-  assert.equal(stillSuppressed.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, '')
+  assert.equal(stillSuppressed.prompt, '')
 
   await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 3, summary: 'the later recovery tool completed', callId: 'successful-recovery',
   })
   const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 4 })
-  assert.match(active.assembly.contexts.find((context) => context.name === 'reasoning-summary:instruction').text, /Tool-step communication protocol/)
+  assert.match(active.prompt, /Tool-step communication protocol/)
 })
 
 test('summaries beside a real tool call do not trigger the spin release', async () => {

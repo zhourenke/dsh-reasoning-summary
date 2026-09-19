@@ -14,11 +14,10 @@ import type { StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only augmentation imports. Each of these packages merges its service and
 // events into the Cordis `Context`/`Events` interfaces, so the plugin must load
-// the declarations to keep `ctx.settings`, `ctx.systemPrompt`, `ctx.tools`, and
-// the subscribed event names typed. `import type {}` is erased at runtime and
-// therefore never pulls a private copy of a host package.
+// the declarations to keep `ctx.settings`, `ctx.tools`, and the subscribed event
+// names typed. `import type {}` is erased at runtime and therefore never pulls a
+// private copy of a host package.
 import type {} from '@deepseek-ai/dsh-settings'
-import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 
@@ -924,9 +923,6 @@ async function* transformStream(
   }
 }
 
-const PROMPT_CONTEXT_NAME = 'reasoning-summary:instruction'
-const PROMPT_CONTEXT_ORDER = 130
-
 const PROMPT = `Tool-step communication protocol
 
 The action summary must be emitted as visible assistant text — never as reasoning/thinking content; a reasoning-only summary is treated as missing.
@@ -946,10 +942,19 @@ For a final answer with no tool call, emit no summary tag: provide one complete 
 // `tools/result` does not require those packages' services in `inject` — the
 // official `dsh-repeat-tool-reminder` declares no host inject at all while
 // listening on the same stream — so `llm` and `tools` are deliberately absent.
-// The runtime test harness provides exactly these three services, so a
+// The runtime test harness provides exactly these two services, so a
 // reintroduced `ctx.llm`/`ctx.tools` read fails there instead of silently
 // widening the declaration.
-export const inject = ['agents', 'settings', 'systemPrompt']
+export const inject = ['agents', 'settings']
+
+function protocolContextMessage(): UserMessage {
+  return createUserMessage({
+    content: [{ type: 'text', text: PROMPT }],
+    // No context form is intentional: this is request-local ordinary context,
+    // not a durable relay, notice, or snapshot-projection message.
+    source: { kind: 'plugin', plugin: name },
+  })
+}
 
 export function apply(ctx: Context): void {
   const settings = ctx.settings
@@ -987,24 +992,8 @@ export function apply(ctx: Context): void {
     return
   }
 
-  ctx.systemPrompt.context({
-    name: PROMPT_CONTEXT_NAME,
-    // This registration is intentionally empty. Route and warm-up gating is
-    // resolved by the assembly waterfall below; putting PROMPT here would make
-    // it visible to every route before that decision exists.
-    // The Agent Loop turns the resolved context into a durable runtime snapshot
-    // only when the complete snapshot text changes.
-    order: PROMPT_CONTEXT_ORDER,
-    text: '',
-  })
-  // The model-selection layer snapshots its selected route in the final
-  // assembly variables after its inner waterfall returns. Rewrite only this
-  // plugin's context from that authoritative result, so a session whose
-  // Agent.options still contains the creation-time default cannot accidentally
-  // receive the instruction (or miss it after selecting a configured route).
-  // The incoming assembly payload is unused: the authoritative result is the
-  // `next()` return value, which already carries the model-selection layer's
-  // final variables.
+  // Model selection is still resolved during prompt assembly, but the protocol
+  // text itself is added to the request-local pre-step messages below.
   on('system-prompt/assemble', async (_assembly: any, assemblyContext: any, next: () => Promise<any>) => {
     const result = await next()
     const agent = assemblyContext?.agent as Agent | undefined
@@ -1012,18 +1001,12 @@ export function apply(ctx: Context): void {
     const enabled = route !== undefined && selected.has(route)
     const runtime = agent?.session === undefined ? undefined : runtimeStateFor(agent)
     const warmup = enabled && runtime !== undefined ? needsWarmup(runtime, route) : false
-    const text = enabled && !warmup ? PROMPT : ''
     if (agent !== undefined && route !== undefined) {
       // `agent/pre-step` consumes this once. It keeps the context and stream
       // policy coherent when settings change between assembly and pre-step.
       admissionSnapshots.set(agent as object, { route, enabled, warmup })
     }
-    return {
-      ...result,
-      contexts: (result?.contexts ?? []).map((context: any) => context?.name === PROMPT_CONTEXT_NAME
-        ? { ...context, text }
-        : context),
-    }
+    return result
   }, { prepend: true })
 
   const states = new WeakMap<object, StepState>()
@@ -1162,8 +1145,13 @@ export function apply(ctx: Context): void {
       if (decision.kind === 'reject') {
         dropRuntimePending(agent, payload.turn, payload.step)
         dropState(payload.agent, state)
+        return decision
       }
-      return decision
+      if (payload.signal?.aborted) return decision
+      return {
+        ...decision,
+        messages: [...decision.messages, protocolContextMessage()],
+      }
     }, (error) => {
       dropRuntimePending(agent, payload.turn, payload.step)
       dropState(payload.agent, state)
