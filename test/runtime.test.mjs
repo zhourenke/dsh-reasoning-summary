@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Session } from '@deepseek-ai/dsh-session'
@@ -286,6 +286,13 @@ function appendUserMessage(agent, text, source = {}) {
   }), { surfaceOp: 'append' })
 }
 
+function appendDecisionMessages(agent, decision) {
+  if (decision.kind !== 'enter') return
+  for (const message of decision.messages) {
+    agent.session.append('user/message', message, { surfaceOp: 'append' })
+  }
+}
+
 function promptText(messages) {
   return messages.find((message) => message.source?.kind === 'plugin'
     && message.content?.[0]?.type === 'text'
@@ -314,6 +321,7 @@ async function admitRoute(harness, agent, { provider, model, turn, step, message
     messages,
     ...(signal === undefined ? {} : { signal }),
   }, async () => ({ kind: 'enter', messages }))
+  appendDecisionMessages(agent, decision)
   if (decision.kind === 'enter') {
     harness.emitSessionEvent(agent.session, {
       type: 'step/start',
@@ -555,7 +563,7 @@ test('runtime warm-up state is isolated per Session', async () => {
   assert.match(firstReady.prompt, /Tool-step communication protocol/)
   assert.equal(secondCold.prompt, '')
 })
-test('request-local protocol context is present only for the selected ready route', async () => {
+test('protocol context is present only for the selected ready route', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
   const harness = makeHarness({ models: [route], autoPrime: false })
   const agent = makeAgent(harness)
@@ -575,6 +583,37 @@ test('request-local protocol context is present only for the selected ready rout
   const disabled = await admitRoute(harness, other, { provider: 'cotton', model: 'gpt-5.6-terra', turn: 1, step: 1 })
   assert.equal(disabled.prompt, '')
 })
+test('protocol context is emitted once per turn', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
+  const harness = makeHarness({ models: [route] })
+  const agent = makeAgent(harness)
+
+  await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'once-per-turn-warmup' })
+  const first = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
+  const second = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+
+  assert.match(first.prompt, /Tool-step communication protocol/)
+  assert.equal(second.prompt, '')
+  assert.equal(
+    agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
+      && message.source?.plugin === 'reasoning-summary'
+      && message.source?.form === undefined
+      && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length,
+    1,
+  )
+
+  const nextTurn = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
+  assert.match(nextTurn.prompt, /Tool-step communication protocol/)
+  assert.equal(
+    agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
+      && message.source?.plugin === 'reasoning-summary'
+      && message.source?.form === undefined
+      && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length,
+    2,
+  )
+})
+
 test('route changes preserve assembly variables and sections without a snapshot context', async () => {
   const selectedRoute = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
   const otherRoute = { provider: 'bailian', model: 'deepseek-v4-flash' }
@@ -1691,7 +1730,8 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
     { type: 'block-end', index: 1, block: { type: 'tool-call', id: callId, name: 'read_file', arguments: '{"path":"x"}' } },
     finish(),
   ]
-  await preStep({ agent, turn: 2, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  const initialDecision = await preStep({ agent, turn: 2, step: 1 }, async () => ({ kind: 'enter', messages: [] }))
+  appendDecisionMessages(agent, initialDecision)
   const result = []
   for await (const chunk of stream(mainStreamOptions(agent), () => streamOf(chunks))) result.push(chunk)
 
@@ -1731,17 +1771,18 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.doesNotMatch(relay.content[0].text, /<summary|source=|turn=|step=|Reasoning summary history/)
   assert.equal(relayEvents(agent.session).length, 0)
 
-  const preStep2 = harness.listeners.get('agent/pre-step')
-  const decision = await preStep2({ agent, turn: 2, step: 2 }, async () => ({
+  const decision = await preStep({ agent, turn: 2, step: 2 }, async () => ({
     kind: 'enter',
     messages: agent.takeInbox(),
   }))
-  assert.equal(decision.messages.length, 2)
+  appendDecisionMessages(agent, decision)
+  assert.equal(decision.messages.length, 1)
   assert.strictEqual(decision.messages[0], relay)
-  assert.match(decision.messages[1].content[0].text, /Tool-step communication protocol/)
-  assert.equal(decision.messages[1].source.form, undefined)
-  agent.session.append('user/message', relay, { surfaceOp: 'append' })
   assert.equal(relayEvents(agent.session).length, 1)
+  assert.equal(agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
+    && message.source?.plugin === 'reasoning-summary'
+    && message.source?.form === undefined
+    && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length, 1)
 })
 
 test('untagged tool-step prose is hidden and reports missing instead of inferring', async () => {
@@ -2257,7 +2298,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.deepEqual(recoveredTool.output, recoveredTool.chunks)
   assert.equal(relayMessages(agent.session).length, 0)
 
-  const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 5 })
+  const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
   assert.match(active.prompt, /Tool-step communication protocol/)
 })
 
@@ -2296,7 +2337,7 @@ test('a failed recovery tool step keeps spin suppression active', async () => {
   await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 3, summary: 'the later recovery tool completed', callId: 'successful-recovery',
   })
-  const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 4 })
+  const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
   assert.match(active.prompt, /Tool-step communication protocol/)
 })
 

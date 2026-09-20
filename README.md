@@ -65,7 +65,7 @@ reasoning-summary:
 
 ## 插件要求模型做什么
 
-插件会在选中且已预热的路由准入当前步骤时，通过 `agent/pre-step` 返回值把这段要求作为一条**当前请求专用的普通上下文消息**追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
+插件会在选中且已预热的路由准入当前步骤时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
 
 ```xml
 <summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
@@ -73,11 +73,11 @@ reasoning-summary:
 
 摘要之后必须由 DSH 接收一个结构化的 DSH tool-call block 才会执行工具；把工具调用写成普通可见文本不会执行。摘要要写明相关的用户请求、涉及的文件 / 函数 / 命令、已经确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。
 
-### 普通上下文消息与缓存
+### 普通上下文消息与复用
 
-协议提示不再注册 `systemPrompt.context()`，也不再由 `system-prompt/assemble` 改写 `contexts`，因此不会产生 `source.form: 'snapshot'` 的运行时快照或重复的系统提示改写。它只在选中且已预热的当前步骤中追加到 `decision.messages`；消息没有 `form`，属于 request-local 普通 plugin user-message，不调用 `agent.inject()`，也不会自动写入 durable session、relay 或 inbox。当前步骤已有的用户消息和 durable relay 保持原顺序，协议提示位于它们之后。
+协议提示不再注册 `systemPrompt.context()`，也不再由 `system-prompt/assemble` 改写 `contexts`，因此不会产生 `source.form: 'snapshot'` 的运行时快照或重复的系统提示改写。它只在每个 turn 的首个选中且已预热步骤中追加到 `decision.messages`；同一 turn 后续的工具步骤和 continuation 不会再次追加。消息没有 `form`，属于普通 plugin user-message；宿主 Agent Loop 会把返回的 `decision.messages` 按正常 `user/message` 写入 durable session，但插件不会调用 `agent.inject()`，也不会把它写成 relay 或 next-step inbox 消息。当前步骤已有的用户消息和 durable relay 保持原顺序，协议提示位于它们之后。
 
-这会把变化限制在当前请求末尾：稳定历史前缀不因每次 assembly 重写 snapshot 槽位而变化。Provider 是否命中自己的前缀缓存仍取决于 Provider 的缓存键和请求投影，不能把这种消息通道表述成绝对的零成本缓存保证。路由未选中或仍在预热时不追加协议消息；模型选择和设置变化只影响下一次准入。
+这样既避免每一步重复累积相同提示，也让每个新 turn 获得一次新的协议边界。Provider 是否命中自己的前缀缓存仍取决于 Provider 的缓存键和请求投影，不能把这种消息通道表述成绝对的零成本缓存保证。路由未选中或仍在预热时不追加协议消息；模型选择和设置变化只影响下一次准入。
 
 插件会缓存被选中路由中仍需摘要解析或工具文本过滤的输出。处于缓冲区安全前缀的完整 reasoning block 会在匹配的 `block-end` 到达时立即按 Provider 原始顺序输出，供下游流处理插件（例如 reasoning-merge）实时消费；普通文本、工具帧和 usage 仍会等待摘要判定或 `finish`。因此该路由是**部分伪非流式**：连续的 reasoning block 可以流式显示，但任何位于未决文本之后的内容不能越过该文本，以免重排输出或泄漏工具步骤普通文本。
 

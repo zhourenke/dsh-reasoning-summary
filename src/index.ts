@@ -75,6 +75,7 @@ interface SummaryInfo {
 interface TurnContinuationState {
   readonly turn: number
   attempts: number
+  protocolInjected: boolean
 }
 
 const MAX_REASONING_CONTINUATIONS = 3
@@ -950,10 +951,28 @@ export const inject = ['agents', 'settings']
 function protocolContextMessage(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: PROMPT }],
-    // No context form is intentional: this is request-local ordinary context,
-    // not a durable relay, notice, or snapshot-projection message.
+    // No context form is intentional: this is an ordinary plugin user message,
+    // not a durable relay, notice, or snapshot-projection message. The Agent Loop
+    // persists the returned decision message in its normal user-message history.
     source: { kind: 'plugin', plugin: name },
   })
+}
+
+function isProtocolContextMessage(message: unknown): boolean {
+  const candidate = message as {
+    content?: readonly { type?: unknown; text?: unknown }[]
+    source?: { kind?: unknown; plugin?: unknown; form?: unknown }
+  } | null | undefined
+  return candidate?.source?.kind === 'plugin'
+    && candidate.source.plugin === name
+    && candidate.source.form === undefined
+    && candidate.content?.length === 1
+    && candidate.content[0]?.type === 'text'
+    && candidate.content[0]?.text === PROMPT
+}
+
+function hasProtocolContext(messages: readonly unknown[] | undefined): boolean {
+  return messages?.some(isProtocolContextMessage) === true
 }
 
 export function apply(ctx: Context): void {
@@ -993,7 +1012,7 @@ export function apply(ctx: Context): void {
   }
 
   // Model selection is still resolved during prompt assembly, but the protocol
-  // text itself is added to the request-local pre-step messages below.
+  // text itself is added to the per-turn ordinary pre-step messages below.
   on('system-prompt/assemble', async (_assembly: any, assemblyContext: any, next: () => Promise<any>) => {
     const result = await next()
     const agent = assemblyContext?.agent as Agent | undefined
@@ -1114,7 +1133,7 @@ export function apply(ctx: Context): void {
 
     const continuationState: TurnContinuationState = preserveTurnState && previousTurnState !== undefined
       ? previousTurnState
-      : { turn: payload.turn, attempts: 0 }
+      : { turn: payload.turn, attempts: 0, protocolInjected: false }
     turnStates.set(payload.agent, continuationState)
     const state: StepState = {
       agent: payload.agent as Agent,
@@ -1148,6 +1167,12 @@ export function apply(ctx: Context): void {
         return decision
       }
       if (payload.signal?.aborted) return decision
+      if (hasProtocolContext(decision.messages)) {
+        continuationState.protocolInjected = true
+        return decision
+      }
+      if (continuationState.protocolInjected) return decision
+      continuationState.protocolInjected = true
       return {
         ...decision,
         messages: [...decision.messages, protocolContextMessage()],

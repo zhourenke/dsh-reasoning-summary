@@ -8,7 +8,7 @@
 
 | 路径 | 说明 |
 |---|---|
-| `src/index.ts` | 宿主半边全部实现：设置、request-local 上下文提示注入、流拦截、摘要规范化、relay 与 continuation |
+| `src/index.ts` | 宿主半边全部实现：设置、每 turn 一次的普通上下文提示注入、流拦截、摘要规范化、relay 与 continuation |
 | `src/client.ts` | 浏览器半边：设置页里的一张模型选择卡片（纯脚本，无 `import`） |
 | `lib/index.js` | 宿主编译产物，**必须提交**（路线 A） |
 | `lib/client.js` | 浏览器编译产物，**必须提交** |
@@ -81,7 +81,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 1. 宿主 `inject` 只列真正读取的服务
 
-当前是 `['agents', 'settings']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的 request-local 普通 plugin user-message。它不会调用 `agent.inject()`，不会写入 durable session、relay 或 next-step inbox。未选中或预热步骤不会追加。`
+当前是 `['agents', 'settings']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 且每个 turn 的首个有效步骤的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的普通 plugin user-message。同一 turn 后续步骤复用已写入的 durable `user/message`，不会重复追加。它不会调用 `agent.inject()`，也不会写成 relay 或 next-step inbox 消息。未选中或预热步骤不会追加。
 
 ### 2. 状态挂在 WeakMap 上，准入快照另存一份
 
@@ -171,7 +171,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 | 常量 | 定义处 | README 副本 | 谁读它 |
 |---|---|---|---|
-| `PROMPT` | `src/index.ts` | 无（README 只描述协议） | enabled、非 warmup 步骤的 request-local 普通上下文消息 |
+| `PROMPT` | `src/index.ts` | 无（README 只描述协议） | 每个 turn 首个 enabled、非 warmup 步骤的普通上下文消息；宿主随后将其写入正常 `user/message` 历史，同一 turn 不重复注入 |
 | `MISSING_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: missing]` 附注 |
 | `PARTIAL_TEXT` | `src/index.ts`（导出） | 有，全文 | relay 的 `[Action summary: partial]` 附注 |
 | `REASONING_CONTINUATION_TEXT` | `src/index.ts` | 无 | reasoning-only continuation 的正文 |
