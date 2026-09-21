@@ -65,10 +65,10 @@ reasoning-summary:
 
 ## 插件要求模型做什么
 
-插件会在选中且已预热的路由准入当前步骤时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
+插件会在每个 turn 首个选中且已预热的步骤准入时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
 
 ```xml
-<summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
+<summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
 摘要之后必须由 DSH 接收一个结构化的 DSH tool-call block 才会执行工具；把工具调用写成普通可见文本不会执行。摘要要写明相关的用户请求、涉及的文件 / 函数 / 命令、已经确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。

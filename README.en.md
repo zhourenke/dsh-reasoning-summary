@@ -68,7 +68,7 @@ To confirm it is working: after the last tool call of each step, the interface s
 The plugin appends this requirement as an ordinary context message to the end of `decision.messages` returned by `agent/pre-step` for the first selected, already-warm step of each turn: **before calling a tool, write one action summary as visible text**, in a literal tag:
 
 ```xml
-<summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
+<summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
 After the summary, DSH must receive a structured DSH tool-call block for the tool to execute; writing a tool invocation as ordinary visible text does not execute it. The summary should name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.

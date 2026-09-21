@@ -293,10 +293,20 @@ function appendDecisionMessages(agent, decision) {
   }
 }
 
+function isProtocolMessage(message) {
+  // The protocol context is the plugin's only form-less message: every relay and
+  // notice declares a `form`, so this identifies it without restating the copy.
+  return message.source?.kind === 'plugin'
+    && message.source.plugin === 'reasoning-summary'
+    && message.source.form === undefined
+}
+
 function promptText(messages) {
-  return messages.find((message) => message.source?.kind === 'plugin'
-    && message.content?.[0]?.type === 'text'
-    && message.content[0].text.includes('Tool-step communication protocol'))?.content[0].text ?? ''
+  return messages.find(isProtocolMessage)?.content?.[0]?.text ?? ''
+}
+
+function assertProtocolPrompt(prompt) {
+  assert.notEqual(prompt, '', 'expected the protocol context message')
 }
 
 async function assembleWithRoute(harness, agent, provider, model) {
@@ -419,7 +429,7 @@ test('a cold selected route warms transparently after its first real tool step',
   assert.equal(agent.session.events.some((event) => event.type === 'reasoning-summary/warmup'), false)
 
   const active = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
-  assert.match(active.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(active.prompt)
   await completeConcludedToolStep(harness, agent, {
     turn: 1, step: 2, summary: 'the next tool action was processed', callId: 'cold-2',
   })
@@ -445,7 +455,7 @@ test('a final answer without a tool keeps the selected route cold', async () => 
     turn: 2, step: 1, summary: 'the first tool step of the second turn warmed the route', callId: 'direct-then-tool',
   })
   const afterWarmup = await admitRoute(harness, agent, { ...route, turn: 2, step: 2 })
-  assert.match(afterWarmup.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(afterWarmup.prompt)
 })
 
 test('a route switch rewarms even a route that was ready earlier', async () => {
@@ -469,7 +479,7 @@ test('a route switch rewarms even a route that was ready earlier', async () => {
   assert.equal(aWarmup.prompt, '')
   await completeConcludedToolStep(harness, agent, { turn: 3, step: 1, summary: 'A completed its new warm-up action', callId: 'switch-warm-a' })
   const activeA = await admitRoute(harness, agent, { ...A, turn: 3, step: 2 })
-  assert.match(activeA.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(activeA.prompt)
 })
 
 test('warm-up reuse expires at 30 minutes from the last tool step', async () => {
@@ -485,7 +495,7 @@ test('warm-up reuse expires at 30 minutes from the last tool step', async () => 
 
     now += 30 * 60 * 1000 - 1
     const withinWindow = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-    assert.match(withinWindow.prompt, /Tool-step communication protocol/)
+    assertProtocolPrompt(withinWindow.prompt)
 
     now += 1
     const atBoundary = await admitRoute(harness, agent, { ...route, turn: 3, step: 1 })
@@ -508,7 +518,7 @@ test('a recent non-tool step does not refresh the last tool timestamp', async ()
 
     Date.now = () => base + 10 * 60 * 1000
     const nonTool = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-    assert.match(nonTool.prompt, /Tool-step communication protocol/)
+    assertProtocolPrompt(nonTool.prompt)
     harness.emitSessionEvent(agent.session, {
       type: 'assistant/message',
       time: base + 10 * 60 * 1000,
@@ -560,7 +570,7 @@ test('runtime warm-up state is isolated per Session', async () => {
   emitRuntimeToolLifecycle(harness, first, { turn: 1, step: 1, callId: 'first-tool' })
   const firstReady = await admitRoute(harness, first, { ...route, turn: 1, step: 2 })
   const secondCold = await admitRoute(harness, second, { ...route, turn: 1, step: 1 })
-  assert.match(firstReady.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(firstReady.prompt)
   assert.equal(secondCold.prompt, '')
 })
 test('protocol context is present only for the selected ready route', async () => {
@@ -571,12 +581,14 @@ test('protocol context is present only for the selected ready route', async () =
   assert.equal(warmup.prompt, '')
   emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'context-warmup' })
   const selected = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
-  assert.match(selected.prompt, /Tool-step communication protocol/)
-  assert.match(selected.prompt, /exactly one literal XML-style summary tag as visible text immediately before the first tool call/)
-  assert.match(selected.prompt, /reasoning-only summary is treated as missing/)
+  assertProtocolPrompt(selected.prompt)
+  assert.match(selected.prompt, /emit exactly one literal summary tag as visible assistant text immediately before the first tool call/)
+  assert.match(selected.prompt, /A summary that appears only in reasoning is treated as missing/)
+  assert.match(selected.prompt, /closing tag never arrives is treated as partial/)
   assert.match(selected.prompt, /emit no ordinary assistant prose outside that tag/)
-  assert.match(selected.prompt, /Any visible text outside the tag is discarded/)
+  assert.match(selected.prompt, /Visible text outside the tag is discarded/)
   assert.match(selected.prompt, /specific and actionable/)
+  assert.match(selected.prompt, /<summary>[^<]*<\/summary>/)
   assert.equal(selected.decision.messages.at(-1).source.form, undefined)
 
   const other = makeAgent(harness, 'context-other')
@@ -593,25 +605,13 @@ test('protocol context is emitted once per turn', async () => {
   const first = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
   const second = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
 
-  assert.match(first.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(first.prompt)
   assert.equal(second.prompt, '')
-  assert.equal(
-    agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
-      && message.source?.plugin === 'reasoning-summary'
-      && message.source?.form === undefined
-      && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length,
-    1,
-  )
+  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 1)
 
   const nextTurn = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.match(nextTurn.prompt, /Tool-step communication protocol/)
-  assert.equal(
-    agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
-      && message.source?.plugin === 'reasoning-summary'
-      && message.source?.form === undefined
-      && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length,
-    2,
-  )
+  assertProtocolPrompt(nextTurn.prompt)
+  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 2)
 })
 
 test('route changes preserve assembly variables and sections without a snapshot context', async () => {
@@ -935,7 +935,7 @@ test('a successful tool step on an unselected route can warm later selection', a
 
   harness.updateSettings({ models: [route] })
   const reenabled = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.match(reenabled.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(reenabled.prompt)
   await completeConcludedToolStep(harness, agent, {
     turn: 2, step: 1, summary: 'the re-enabled route reused the prior tool warm-up', callId: 'reenabled-active',
   })
@@ -1779,10 +1779,7 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.equal(decision.messages.length, 1)
   assert.strictEqual(decision.messages[0], relay)
   assert.equal(relayEvents(agent.session).length, 1)
-  assert.equal(agent.session.deriveMessages().filter((message) => message.source?.kind === 'plugin'
-    && message.source?.plugin === 'reasoning-summary'
-    && message.source?.form === undefined
-    && message.content?.[0]?.text?.includes('Tool-step communication protocol')).length, 1)
+  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 1)
 })
 
 test('untagged tool-step prose is hidden and reports missing instead of inferring', async () => {
@@ -2299,7 +2296,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.equal(relayMessages(agent.session).length, 0)
 
   const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.match(active.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(active.prompt)
 })
 
 test('a failed recovery tool step keeps spin suppression active', async () => {
@@ -2338,7 +2335,7 @@ test('a failed recovery tool step keeps spin suppression active', async () => {
     turn: 1, step: 3, summary: 'the later recovery tool completed', callId: 'successful-recovery',
   })
   const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assert.match(active.prompt, /Tool-step communication protocol/)
+  assertProtocolPrompt(active.prompt)
 })
 
 test('summaries beside a real tool call do not trigger the spin release', async () => {

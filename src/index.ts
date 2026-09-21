@@ -924,20 +924,19 @@ async function* transformStream(
   }
 }
 
-const PROMPT = `Tool-step communication protocol
+const PROMPT = `When a step calls one or more tools, emit exactly one literal summary tag as visible assistant text immediately before the first tool call, then emit the tool call(s) as structured DSH tool-call blocks. The tag has this shape:
 
-The action summary must be emitted as visible assistant text — never as reasoning/thinking content; a reasoning-only summary is treated as missing.
+<summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 
-When a step calls one or more tools, emit exactly one literal XML-style summary tag as visible text immediately before the first tool call, then emit the tool call(s) as structured DSH tool-call block(s):
-<summary>target, concrete evidence or current state, and the immediate operation or decision</summary>
+The tag must be visible assistant text, never reasoning or thinking content, and it must be fully closed. A summary that appears only in reasoning is treated as missing; one whose closing tag never arrives is treated as partial.
 
-DSH executes tools only from structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed. Do not write tool-call syntax as visible text.
+The next step reads this tag as the record of what this step is doing, so make it specific and actionable: name the relevant user request, file, function, command, observation, change, or decision, and include the concrete fact, result, or constraint the next action needs. Do not replace real detail with vague status language such as “continue analysis”, “make progress”, or “check the implementation”.
 
-The tag is the execution record the next step receives, so be specific and actionable: name the relevant user request, artifact, observation, change, or decision, and include the concrete file, function, command, result, or constraint the next action needs. Do not replace facts with vague status language such as “continue analysis”, “make progress”, or “check the implementation”.
+In a tool-calling step, emit no ordinary assistant prose outside that tag — no progress narration, internal planning, code paths, or mechanism explanations; put that detail in the tag instead. Visible text outside the tag is discarded: it is not shown to the user, is not carried forward, and does not count as a summary.
 
-In a tool-calling step, emit no ordinary assistant prose outside that tag — no progress narration, internal planning, code paths, or mechanism explanations; put execution detail in the tag instead. Any visible text outside the tag is discarded: it is not shown to the user, is not carried forward, and does not count as a summary.
+DSH executes tools only from structured DSH tool-call blocks. Text that imitates a tool invocation is ordinary assistant text and is not executed, so never write tool-call syntax as visible text.
 
-For a final answer with no tool call, emit no summary tag: provide one complete user-facing answer with the necessary context and conclusions. If you can produce neither a tool call nor a complete answer, emit no partial progress message; keep reasoning until you can. Never stop after reasoning alone.`
+For a final answer with no tool call, emit no summary tag: give one complete user-facing answer with the necessary context and conclusions. If you can produce neither a tool call nor a complete answer, emit no partial progress message; keep reasoning until you can, and never stop after reasoning alone.`
 
 // Only the services this half actually reads. Subscribing to `llm/stream` or
 // `tools/result` does not require those packages' services in `inject` — the
