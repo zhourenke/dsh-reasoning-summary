@@ -582,15 +582,15 @@ test('protocol context is present only for the selected ready route', async () =
   emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'context-warmup' })
   const selected = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
   assertProtocolPrompt(selected.prompt)
-  // The core emission sentence is asserted with `includes`: it contains literal
-  // `<summary>...</summary>` markup, which a RegExp would treat as metacharacters.
+  // The core emission sentence is asserted with `includes`: it contains a literal
+  // `<summary>` tag, which a RegExp would treat as metacharacters.
   assert.equal(selected.prompt.includes(
-    'emit exactly one closed <summary>...</summary> tag as visible assistant text immediately before the first tool call',
+    'emit exactly one closed <summary> tag as visible assistant text immediately before the first tool call',
   ), true)
-  assert.match(selected.prompt, /Reasoning-only summaries count as missing; unclosed tags count as partial/)
+  assert.match(selected.prompt, /A summary written only in reasoning or thinking counts as missing; a tag left unclosed counts as partial/)
   assert.match(selected.prompt, /never write tool-call syntax as visible text/)
   assert.match(selected.prompt, /specific and actionable/)
-  assert.match(selected.prompt, /text outside the tag is discarded/)
+  assert.match(selected.prompt, /anything outside it is discarded/)
   assert.match(selected.prompt, /never emit partial progress or stop after reasoning alone/)
   assert.match(selected.prompt, /<summary>[^<]*<\/summary>/)
   assert.equal(selected.decision.messages.at(-1).source.form, undefined)

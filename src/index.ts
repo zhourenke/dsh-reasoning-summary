@@ -924,17 +924,17 @@ async function* transformStream(
   }
 }
 
-const PROMPT = `When a step calls tools, emit exactly one closed <summary>...</summary> tag as visible assistant text immediately before the first tool call, then the tool call(s) as structured DSH tool-call blocks. Only those execute; never write tool-call syntax as visible text.
+const PROMPT = `When a step calls tools, emit exactly one closed <summary> tag as visible assistant text immediately before the first tool call, then the tool calls as structured DSH tool-call blocks. Only structured blocks execute; never write tool-call syntax as visible text.
 
 <summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 
-Reasoning-only summaries count as missing; unclosed tags count as partial.
+A summary written only in reasoning or thinking counts as missing; a tag left unclosed counts as partial.
 
-The next step reads this tag as the record of this step, so be specific and actionable: name the relevant request, file, function, command, observation, change, or decision, plus the fact, result, or constraint the next action needs — never vague status (“continue analysis”, “make progress”, “check the implementation”).
+The next step reads this tag as this step's record, so be specific and actionable: say what you are working on (request, file, function, command), what you found or changed, and what you will do next, with the results or constraints the next action needs. Vague status such as “continue analysis”, “make progress”, or “check the implementation” is useless.
 
-In a tool-calling step, emit nothing else visible: text outside the tag is discarded — not shown to the user, not carried forward, not counted as a summary — so put that detail in the tag.
+In a tool-calling step, keep all visible text inside the tag: anything outside it is discarded — not shown to the user, not carried forward, not counted as a summary.
 
-With no tool call, emit no tag: give one complete user-facing answer instead, and never emit partial progress or stop after reasoning alone.`
+When a step calls no tools, emit no tag: give one complete user-facing answer instead, and never emit partial progress or stop after reasoning alone.`
 
 // Only the services this half actually reads. Subscribing to `llm/stream` or
 // `tools/result` does not require those packages' services in `inject` — the
