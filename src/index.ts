@@ -15,9 +15,13 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // Type-only augmentation imports. Each of these packages merges its service and
 // events into the Cordis `Context`/`Events` interfaces, so the plugin must load
 // the declarations to keep `ctx.settings`, `ctx.tools`, and the subscribed event
-// names typed. `import type {}` is erased at runtime and therefore never pulls a
-// private copy of a host package.
+// names typed. `system-prompt/assemble` is declared only by dsh-system-prompt,
+// and it would otherwise arrive solely as a side effect of dsh-agent importing
+// `AssembleContext` from it — a cross-package coincidence, not a dependency.
+// `import type {}` is erased at runtime and therefore never pulls a private copy
+// of a host package.
 import type {} from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 
