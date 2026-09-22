@@ -65,19 +65,19 @@ reasoning-summary:
 
 ## 插件要求模型做什么
 
-插件会在每个 Session 首个选中且已预热的步骤准入时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
+插件会在每个 Session 首个选中且已预热的步骤，向模型追加一条普通上下文消息，要求它在**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
 
 ```xml
 <summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
-摘要之后必须由 DSH 接收一个结构化的 DSH tool-call block 才会执行工具；把工具调用写成普通可见文本不会执行。摘要要写明相关的用户请求、涉及的文件 / 函数 / 命令、已经确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。
+工具只在 DSH 收到结构化的 DSH tool-call block 时才会执行；把工具调用写成普通可见文本不会执行。插件要求摘要写明相关的用户请求、涉及的文件 / 函数 / 命令、已确认的观察或结果，以及紧接着要做的动作或决定；"继续分析""检查实现"这类无法据此行动的话没有意义。
 
-### 普通上下文消息与复用
+### 提示只追加一次
 
-协议提示不再注册 `systemPrompt.context()`，也不再由 `system-prompt/assemble` 改写 `contexts`，因此不会产生 `source.form: 'snapshot'` 的运行时快照或重复的系统提示改写。它只在每个 Session 的首个选中且已预热步骤中追加到 `decision.messages`；后续步骤和后续 turn 都不会再次追加。消息没有 `form`，属于普通 plugin user-message；宿主 Agent Loop 会把返回的 `decision.messages` 按正常 `user/message` 写入 durable session，但插件不会调用 `agent.inject()`，也不会把它写成 relay 或 next-step inbox 消息。插件重新激活时会检查已有 durable history，已存在协议上下文就不再重复注入。当前步骤已有的用户消息和 durable relay 保持原顺序，协议提示位于它们之后。
+这条要求在每个 Session 中只追加一次：后续步骤和后续 turn 都不会重复累积同一段文字，插件重新激活时也会先确认历史里是否已有它。它是普通的会话历史消息，因此中途切换模型后同样读得到，也不会撤销或重排当前步骤已有的用户消息与摘要。路由未选中或仍在预热时不追加；模型选择和设置变化只影响下一次准入。
 
-这样既避免每一步和每个后续 turn 重复累积相同提示，也让每个 Session 至多建立一次协议边界。Provider 是否命中自己的前缀缓存仍取决于 Provider 的缓存键和请求投影，不能把这种消息通道表述成绝对的零成本缓存保证。路由未选中或仍在预热时不追加协议消息；模型选择和设置变化只影响下一次准入。
+Provider 是否命中前缀缓存取决于 Provider 自己的缓存键与请求投影，因此这种消息通道不构成零成本保证。
 
 插件会缓存被选中路由中仍需摘要解析或工具文本过滤的输出。处于缓冲区安全前缀的完整 reasoning block 会在匹配的 `block-end` 到达时立即按 Provider 原始顺序输出，供下游流处理插件（例如 reasoning-merge）实时消费；普通文本、工具帧和 usage 仍会等待摘要判定或 `finish`。因此该路由是**部分伪非流式**：连续的 reasoning block 可以流式显示，但任何位于未决文本之后的内容不能越过该文本，以免重排输出或泄漏工具步骤普通文本。
 
@@ -122,7 +122,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 ## 预热与复用窗口
 
-插件的预热状态只存在于进程内的 `WeakMap`，按 Session 隔离，不会追加插件自定义的 Session 事件或字段。冷启动、模型切换，或上一次工具步骤已超过 30 分钟时，选中路由的下一步是透明预热：不注入本插件提示，也不解析、隐藏、relay 或 continuation 当前流。
+预热状态按 Session 隔离，只存在于内存中、不写入会话历史，因此 DSH 重启后所有路由都需要重新预热。冷启动、模型切换，或上一次工具步骤已超过 30 分钟时，选中路由的下一步是透明预热：不注入本插件提示，也不解析、隐藏、relay 或 continuation 当前流。
 
 只有当这个步骤真正进入、产生结构化工具调用、助手消息正常完成、工具结果已经结算并到达 `step/end` 后，当前路由才会记录一条成功工具证据；这条证据不要求步骤当时已勾选，未勾选只影响当前步骤是否处理插件输出，不影响它作为预热证据。之后同一 Provider/Model 路由在距最近一次成功工具步骤严格少于 30 分钟时可以直接接续；正好 30 分钟、时钟回拨、没有成功工具步骤、失败或中断步骤都会重新预热。
 
@@ -147,9 +147,9 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 ## 给 Agent 的要点
 
-- 本插件不提供任何工具，但会**改变被选中路由该输出什么**：调用工具前需要给出可见的 `<summary>…</summary>`，只写在推理 / 思考内容里不算数。
+- 本插件不提供任何工具，但会**改变被选中路由该输出什么**：被选中的路由在调用工具前会先输出一段可见的 `<summary>…</summary>`；只写在推理 / 思考内容里的不算。
 - 它不改变会话历史的可见范围，所有模型看到的历史是一致的。
-- 摘要具体到文件 / 命令 / 观察结果与下一步动作。
+- 插件要求的摘要具体到文件 / 命令 / 观察结果与下一步动作。
 - `[Action summary: missing]` / `[Action summary: partial]` 表示上一条摘要没写全；`[Continue after reasoning-only response]` 表示上一轮只有推理、没有动作也没有答复。
 - 判断插件是否生效：工具步骤后界面上出现 **注入上下文 · reasoning-summary** 提示。
 

@@ -65,19 +65,19 @@ To confirm it is working: after the last tool call of each step, the interface s
 
 ## What the plugin asks the model to do
 
-The plugin appends this requirement as an ordinary context message to the end of `decision.messages` returned by `agent/pre-step` for the first selected, already-warm step of each Session: **before calling a tool, write one action summary as visible text**, in a literal tag:
+For the first selected, already-warm step of each Session the plugin appends one ordinary context message asking the model to **write one action summary as visible text before calling a tool**, in a literal tag:
 
 ```xml
 <summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
 ```
 
-After the summary, DSH must receive a structured DSH tool-call block for the tool to execute; writing a tool invocation as ordinary visible text does not execute it. The summary should name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.
+A tool executes only when DSH receives a structured DSH tool-call block; writing a tool invocation as ordinary visible text does not execute it. The plugin expects the summary to name the relevant user request, the file / function / command, the verified observation or result, and the immediate next action or decision; wording that cannot be acted on — "continue analysis", "check the implementation" — is of no use.
 
-### Ordinary context messages and reuse
+### The prompt is appended only once
 
-The protocol prompt is no longer registered through `systemPrompt.context()` and `system-prompt/assemble` no longer rewrites `contexts`. It therefore does not create a `source.form: 'snapshot'` runtime snapshot or repeated system-prompt mutations. It is appended only on the first selected, already-warm step of each Session; later steps and later turns do not append it again. The message has no `form`, so it is an ordinary plugin user message. The Agent Loop persists returned `decision.messages` through the normal `user/message` session history; the plugin does not call `agent.inject()` and does not write this prompt as relay history or a next-step inbox item. When the plugin is reactivated, it checks durable history and suppresses the prompt if the Session already contains protocol context. Existing claimed user messages and durable relays retain their order, with the protocol prompt after them.
+This requirement is appended once per Session: later steps and later turns never accumulate the same text again, and a reactivated plugin first checks whether the Session already carries it. It is an ordinary session-history message, so it stays readable after a mid-session model switch, and it neither revokes nor reorders the user messages and summaries the current step already has. Unselected or still-warming routes receive nothing; model and settings changes apply to the next admission.
 
-This prevents identical prompt accumulation across steps and turns. The Session establishes the protocol boundary at most once. Provider prefix-cache behavior still depends on the provider's cache key and request projection, so this is not an absolute zero-cost caching guarantee. Disabled and warming routes receive no protocol message; model and settings changes apply to the next admission.
+Whether a Provider hits its prefix cache depends on that Provider's own cache key and request projection, so this channel is not a zero-cost guarantee.
 
 Only **visible text** counts: a summary that lives in reasoning / thinking is treated as missing. It also has to come before the first tool call. None of this text — **including the summary tag itself** — is shown in the interface.
 
@@ -123,7 +123,7 @@ When a model emits reasoning only, with neither a tool call nor a visible answer
 
 ## Warm-up and reuse window
 
-Warm-up state exists only in memory in a `WeakMap`, isolated per Session. The plugin never appends a plugin-defined Session event or field. On cold start, after a model switch, or after more than 30 minutes since the last tool step, the next step on a selected route is transparent warm-up: the plugin prompt is omitted, and the stream is not parsed, hidden, relayed, or used for continuation.
+Warm-up state is isolated per Session, lives only in memory, and is never written into session history, so every route warms up again after DSH restarts. On cold start, after a model switch, or after more than 30 minutes since the last tool step, the next step on a selected route is transparent warm-up: the plugin prompt is omitted, and the stream is not parsed, hidden, relayed, or used for continuation.
 
 A route records successful tool evidence only after the step has actually entered, produced a structured tool call, completed a normal assistant message, settled its tool results, and reached `step/end`. The evidence does not require the route to have been selected at the time; an unselected route only bypasses plugin output for that step and can still provide warm-up evidence. The same exact Provider/Model route may then continue directly when less than 30 minutes have elapsed since its latest successful tool step; exactly 30 minutes, clock rollback, no successful tool step, failure, or interruption requires warm-up again.
 
@@ -148,9 +148,9 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 
 ## Notes for agents
 
-- This plugin provides no tools, but it **changes what a selected route should emit**: a visible `<summary>…</summary>` before calling a tool. Text that only lives in reasoning / thinking does not count.
+- This plugin provides no tools, but it **changes what a selected route emits**: the selected route outputs a visible `<summary>…</summary>` before calling a tool; text that only lives in reasoning / thinking does not count.
 - It does not change the visible scope of session history; every model sees the same history.
-- A summary is concrete about the files / commands / observations and the next action.
+- The plugin expects a summary to be concrete about the files / commands / observations and the next action.
 - `[Action summary: missing]` / `[Action summary: partial]` means the previous summary was incomplete; `[Continue after reasoning-only response]` means the last response was reasoning only, with neither an action nor an answer.
 - To tell whether the plugin is active: an **Injected context · reasoning-summary** notice appears in the interface after a tool step.
 

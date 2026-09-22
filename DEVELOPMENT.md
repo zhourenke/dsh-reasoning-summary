@@ -81,7 +81,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 1. 宿主 `inject` 只列真正读取的服务
 
-当前是 `['agents', 'settings']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 且每个 Session 的首个有效步骤的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的普通 plugin user-message；宿主随后将它写入 durable `user/message` 历史。后续步骤和后续 turn 都不会重复追加；插件重新激活时会从已有 durable history 识别协议上下文并继续抑制注入。它不会调用 `agent.inject()`，也不会写成 relay 或 next-step inbox 消息。未选中或预热步骤不会追加。
+当前是 `['agents', 'settings']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 且每个 Session 的首个有效步骤的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的普通 plugin user-message；宿主随后将它写入 durable `user/message` 历史。后续步骤和后续 turn 都不会重复追加；插件重新激活时会从已有 durable history 识别协议上下文并继续抑制注入。它不会调用 `agent.inject()`，也不会写成 relay 或 next-step inbox 消息。未选中或预热步骤不会追加。这条通道取代了早期的 `systemPrompt.context()` 注册与 `system-prompt/assemble` 里的 `contexts` 改写，因此也不再产生 `source.form: 'snapshot'` 的运行时快照；当前步骤已有的用户消息与 durable relay 保持原顺序，协议提示位于它们之后。
 
 ### 2. 状态挂在 WeakMap 上，准入快照另存一份
 
@@ -103,7 +103,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 5. 文案常量集中在宿主半边，README 是第二落点
 
-`PROMPT`、`MISSING_TEXT`、`PARTIAL_TEXT`、`REASONING_CONTINUATION_TEXT` 都定义在 `src/index.ts`，其中 `MISSING_TEXT` 与 `PARTIAL_TEXT` 被导出，供测试**按同一个字符串**断言（测试不重复写一遍文案，否则改文案就会静默失去覆盖）。README 的「流协议」一节里也抄了一份 `MISSING_TEXT` 与 `PARTIAL_TEXT` 的全文——那是**第二落点，不会自动同步**，见下面「面向模型的文案」。
+`PROMPT`、`MISSING_TEXT`、`PARTIAL_TEXT`、`REASONING_CONTINUATION_TEXT` 都定义在 `src/index.ts`，其中 `MISSING_TEXT` 与 `PARTIAL_TEXT` 被导出，供测试**按同一个字符串**断言（测试不重复写一遍文案，否则改文案就会静默失去覆盖）。README 的「插件要求模型做什么」一节里也抄了一份 `MISSING_TEXT` 与 `PARTIAL_TEXT` 的全文——那是**第二落点，不会自动同步**，见下面「面向模型的文案」。
 
 ### 6. 不依赖 `isAgentLoopRequest()`
 
@@ -111,7 +111,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 7. 标签配对取最近邻，且首个完整配对权威
 
-`inspectSummary` 在**同一个文本块内**找最近邻的开/闭标签配对：前面的孤立开标签不会抢走后续的完整配对（模型常见的手误），而一旦出现完整配对该步骤的记录就定了。标签只在 text 通道里找——reasoning/thinking 内容一律不计为可用文本，摘要在插件看来是"缺失"。这条规则的落点是 README 的流协议：模型必须在可见文本里输出字面标签。
+`inspectSummary` 在**同一个文本块内**找最近邻的开/闭标签配对：前面的孤立开标签不会抢走后续的完整配对（模型常见的手误），而一旦出现完整配对该步骤的记录就定了。标签只在 text 通道里找——reasoning/thinking 内容一律不计为可用文本，摘要在插件看来是"缺失"。这条规则的落点是 README 的「插件要求模型做什么」：模型必须在可见文本里输出字面标签。
 
 ### 8. 客户端半边有两条身份字面量，必须与宿主逐字一致
 
