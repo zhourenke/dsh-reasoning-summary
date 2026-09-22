@@ -65,7 +65,7 @@ To confirm it is working: after the last tool call of each step, the interface s
 
 ## What the plugin asks the model to do
 
-The plugin appends this requirement as an ordinary context message to the end of `decision.messages` returned by `agent/pre-step` for the first selected, already-warm step of each turn: **before calling a tool, write one action summary as visible text**, in a literal tag:
+The plugin appends this requirement as an ordinary context message to the end of `decision.messages` returned by `agent/pre-step` for the first selected, already-warm step of each Session: **before calling a tool, write one action summary as visible text**, in a literal tag:
 
 ```xml
 <summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
@@ -75,9 +75,9 @@ After the summary, DSH must receive a structured DSH tool-call block for the too
 
 ### Ordinary context messages and reuse
 
-The protocol prompt is no longer registered through `systemPrompt.context()` and `system-prompt/assemble` no longer rewrites `contexts`. It therefore does not create a `source.form: 'snapshot'` runtime snapshot or repeated system-prompt mutations. It is appended only on the first selected, already-warm step of each turn; later tool steps and continuations in that turn do not append it again. The message has no `form`, so it is an ordinary plugin user message. The Agent Loop persists returned `decision.messages` through the normal `user/message` session history; the plugin does not call `agent.inject()` and does not write this prompt as relay history or a next-step inbox item. Existing claimed user messages and durable relays retain their order, with the protocol prompt after them.
+The protocol prompt is no longer registered through `systemPrompt.context()` and `system-prompt/assemble` no longer rewrites `contexts`. It therefore does not create a `source.form: 'snapshot'` runtime snapshot or repeated system-prompt mutations. It is appended only on the first selected, already-warm step of each Session; later steps and later turns do not append it again. The message has no `form`, so it is an ordinary plugin user message. The Agent Loop persists returned `decision.messages` through the normal `user/message` session history; the plugin does not call `agent.inject()` and does not write this prompt as relay history or a next-step inbox item. When the plugin is reactivated, it checks durable history and suppresses the prompt if the Session already contains protocol context. Existing claimed user messages and durable relays retain their order, with the protocol prompt after them.
 
-This prevents identical prompt accumulation on every step while giving each new turn one fresh protocol boundary. Provider prefix-cache behavior still depends on the provider's cache key and request projection, so this is not an absolute zero-cost caching guarantee. Disabled and warming routes receive no protocol message; model and settings changes apply to the next admission.
+This prevents identical prompt accumulation across steps and turns. The Session establishes the protocol boundary at most once. Provider prefix-cache behavior still depends on the provider's cache key and request projection, so this is not an absolute zero-cost caching guarantee. Disabled and warming routes receive no protocol message; model and settings changes apply to the next admission.
 
 Only **visible text** counts: a summary that lives in reasoning / thinking is treated as missing. It also has to come before the first tool call. None of this text — **including the summary tag itself** — is shown in the interface.
 

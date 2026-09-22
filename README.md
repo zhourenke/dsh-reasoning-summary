@@ -65,7 +65,7 @@ reasoning-summary:
 
 ## 插件要求模型做什么
 
-插件会在每个 turn 首个选中且已预热的步骤准入时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
+插件会在每个 Session 首个选中且已预热的步骤准入时，通过 `agent/pre-step` 返回值把这段要求作为一条普通上下文消息追加到 `decision.messages` 末尾：**调用工具之前，先用可见文本写一句行动摘要**，格式是一个字面标签：
 
 ```xml
 <summary>target or artifact, the concrete evidence or current state, and the immediate operation or decision</summary>
@@ -75,9 +75,9 @@ reasoning-summary:
 
 ### 普通上下文消息与复用
 
-协议提示不再注册 `systemPrompt.context()`，也不再由 `system-prompt/assemble` 改写 `contexts`，因此不会产生 `source.form: 'snapshot'` 的运行时快照或重复的系统提示改写。它只在每个 turn 的首个选中且已预热步骤中追加到 `decision.messages`；同一 turn 后续的工具步骤和 continuation 不会再次追加。消息没有 `form`，属于普通 plugin user-message；宿主 Agent Loop 会把返回的 `decision.messages` 按正常 `user/message` 写入 durable session，但插件不会调用 `agent.inject()`，也不会把它写成 relay 或 next-step inbox 消息。当前步骤已有的用户消息和 durable relay 保持原顺序，协议提示位于它们之后。
+协议提示不再注册 `systemPrompt.context()`，也不再由 `system-prompt/assemble` 改写 `contexts`，因此不会产生 `source.form: 'snapshot'` 的运行时快照或重复的系统提示改写。它只在每个 Session 的首个选中且已预热步骤中追加到 `decision.messages`；后续步骤和后续 turn 都不会再次追加。消息没有 `form`，属于普通 plugin user-message；宿主 Agent Loop 会把返回的 `decision.messages` 按正常 `user/message` 写入 durable session，但插件不会调用 `agent.inject()`，也不会把它写成 relay 或 next-step inbox 消息。插件重新激活时会检查已有 durable history，已存在协议上下文就不再重复注入。当前步骤已有的用户消息和 durable relay 保持原顺序，协议提示位于它们之后。
 
-这样既避免每一步重复累积相同提示，也让每个新 turn 获得一次新的协议边界。Provider 是否命中自己的前缀缓存仍取决于 Provider 的缓存键和请求投影，不能把这种消息通道表述成绝对的零成本缓存保证。路由未选中或仍在预热时不追加协议消息；模型选择和设置变化只影响下一次准入。
+这样既避免每一步和每个后续 turn 重复累积相同提示，也让每个 Session 至多建立一次协议边界。Provider 是否命中自己的前缀缓存仍取决于 Provider 的缓存键和请求投影，不能把这种消息通道表述成绝对的零成本缓存保证。路由未选中或仍在预热时不追加协议消息；模型选择和设置变化只影响下一次准入。
 
 插件会缓存被选中路由中仍需摘要解析或工具文本过滤的输出。处于缓冲区安全前缀的完整 reasoning block 会在匹配的 `block-end` 到达时立即按 Provider 原始顺序输出，供下游流处理插件（例如 reasoning-merge）实时消费；普通文本、工具帧和 usage 仍会等待摘要判定或 `finish`。因此该路由是**部分伪非流式**：连续的 reasoning block 可以流式显示，但任何位于未决文本之后的内容不能越过该文本，以免重排输出或泄漏工具步骤普通文本。
 

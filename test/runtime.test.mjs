@@ -52,8 +52,8 @@ function makeHarness(config) {
   }
   apply(ctx)
 
-  function createTestSession(id) {
-    const raw = Session.create(id)
+  function createTestSession(id, existingRaw = Session.create(id)) {
+    const raw = existingRaw
     let publishing = false
     const session = {
       id: raw.id,
@@ -122,6 +122,7 @@ function makeHarness(config) {
     emitSessionEvent(agent.session, { type: 'step/end', time: now, data: { turn, step } })
     agent.options.provider = previous.provider
     agent.options.model = previous.model
+    return admitted
   }
 
   const autoPrime = config.autoPrime !== false
@@ -143,9 +144,9 @@ function makeHarness(config) {
   }
 }
 
-function makeAgent(harness, id = 'session-1') {
+function makeAgent(harness, id = 'session-1', existingSession = undefined) {
   const inbox = []
-  const session = harness.createTestSession(id)
+  const session = existingSession ?? harness.createTestSession(id)
   const agent = {
     id,
     options: { provider: 'cotton-codex', model: 'gpt-5.6-luna' },
@@ -479,7 +480,7 @@ test('a route switch rewarms even a route that was ready earlier', async () => {
   assert.equal(aWarmup.prompt, '')
   await completeConcludedToolStep(harness, agent, { turn: 3, step: 1, summary: 'A completed its new warm-up action', callId: 'switch-warm-a' })
   const activeA = await admitRoute(harness, agent, { ...A, turn: 3, step: 2 })
-  assertProtocolPrompt(activeA.prompt)
+  assert.equal(activeA.prompt, '')
 })
 
 test('warm-up reuse expires at 30 minutes from the last tool step', async () => {
@@ -599,23 +600,44 @@ test('protocol context is present only for the selected ready route', async () =
   const disabled = await admitRoute(harness, other, { provider: 'cotton', model: 'gpt-5.6-terra', turn: 1, step: 1 })
   assert.equal(disabled.prompt, '')
 })
-test('protocol context is emitted once per turn', async () => {
+test('protocol context is emitted once per Session', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
   const harness = makeHarness({ models: [route] })
   const agent = makeAgent(harness)
 
   await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
-  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'once-per-turn-warmup' })
+  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'once-per-session-warmup' })
   const first = await admitRoute(harness, agent, { ...route, turn: 1, step: 2 })
-  const second = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+  const laterStep = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+  const nextTurn = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
 
   assertProtocolPrompt(first.prompt)
-  assert.equal(second.prompt, '')
+  assert.equal(laterStep.prompt, '')
+  assert.equal(nextTurn.prompt, '')
   assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 1)
+})
 
-  const nextTurn = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assertProtocolPrompt(nextTurn.prompt)
-  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 2)
+test('protocol context stays suppressed after plugin reactivation over the same durable Session', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
+  const firstHarness = makeHarness({ models: [route], autoPrime: false })
+  const firstAgent = makeAgent(firstHarness, 'reactivation-before')
+
+  await admitRoute(firstHarness, firstAgent, { ...route, turn: 1, step: 1 })
+  emitRuntimeToolLifecycle(firstHarness, firstAgent, {
+    turn: 1, step: 1, callId: 'reactivation-warmup',
+  })
+  const first = await admitRoute(firstHarness, firstAgent, { ...route, turn: 1, step: 2 })
+  assertProtocolPrompt(first.prompt)
+  assert.equal(firstAgent.session.deriveMessages().filter(isProtocolMessage).length, 1)
+
+  const secondHarness = makeHarness({ models: [route], autoPrime: false })
+  const secondSession = secondHarness.createTestSession(firstAgent.session.id, firstAgent.session.raw)
+  const secondAgent = makeAgent(secondHarness, 'reactivation-after', secondSession)
+  await secondHarness.primeRoute(secondAgent, route)
+  const reactivated = await admitRoute(secondHarness, secondAgent, { ...route, turn: 2, step: 1 })
+
+  assert.equal(reactivated.prompt, '')
+  assert.equal(secondAgent.session.deriveMessages().filter(isProtocolMessage).length, 1)
 })
 
 test('route changes preserve assembly variables and sections without a snapshot context', async () => {
@@ -2300,7 +2322,7 @@ test('spin suppression keeps later steps transparent until a non-spin tool succe
   assert.equal(relayMessages(agent.session).length, 0)
 
   const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assertProtocolPrompt(active.prompt)
+  assert.equal(active.prompt, '')
 })
 
 test('a failed recovery tool step keeps spin suppression active', async () => {
@@ -2339,7 +2361,7 @@ test('a failed recovery tool step keeps spin suppression active', async () => {
     turn: 1, step: 3, summary: 'the later recovery tool completed', callId: 'successful-recovery',
   })
   const active = await admitRoute(harness, agent, { ...route, turn: 2, step: 1 })
-  assertProtocolPrompt(active.prompt)
+  assert.equal(active.prompt, '')
 })
 
 test('summaries beside a real tool call do not trigger the spin release', async () => {

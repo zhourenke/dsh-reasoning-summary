@@ -75,7 +75,6 @@ interface SummaryInfo {
 interface TurnContinuationState {
   readonly turn: number
   attempts: number
-  protocolInjected: boolean
 }
 
 const MAX_REASONING_CONTINUATIONS = 3
@@ -155,6 +154,8 @@ interface RuntimeCommittedToolStep {
  * ordinary host events and never appends a plugin-owned Session record.
  */
 interface RuntimeSessionState {
+  /** True after this Session has received the ordinary protocol context. */
+  protocolInjected: boolean
   /** Route of the most recently entered model step, including unselected ones. */
   lastEnteredRoute?: string
   /** Route and time of the most recent non-interrupted tool step. */
@@ -960,16 +961,24 @@ function isProtocolContextMessage(message: unknown): boolean {
     content?: readonly { type?: unknown; text?: unknown }[]
     source?: { kind?: unknown; plugin?: unknown; form?: unknown }
   } | null | undefined
+  // Relays and notices carry a form; this plugin's only form-less user message
+  // is the protocol context. Use its durable shape so a reactivated plugin also
+  // recognizes a context written by an earlier prompt revision.
   return candidate?.source?.kind === 'plugin'
     && candidate.source.plugin === name
     && candidate.source.form === undefined
     && candidate.content?.length === 1
     && candidate.content[0]?.type === 'text'
-    && candidate.content[0]?.text === PROMPT
+    && typeof candidate.content[0]?.text === 'string'
 }
 
 function hasProtocolContext(messages: readonly unknown[] | undefined): boolean {
   return messages?.some(isProtocolContextMessage) === true
+}
+
+function hasDurableProtocolContext(session: unknown): boolean {
+  const candidate = session as { deriveMessages?: () => readonly unknown[] } | null | undefined
+  return hasProtocolContext(candidate?.deriveMessages?.())
 }
 
 export function apply(ctx: Context): void {
@@ -987,7 +996,7 @@ export function apply(ctx: Context): void {
     const session = agent.session as object
     let state = runtimeStates.get(session)
     if (!state) {
-      state = {}
+      state = { protocolInjected: hasDurableProtocolContext(session) }
       runtimeStates.set(session, state)
     }
     return state
@@ -1009,7 +1018,7 @@ export function apply(ctx: Context): void {
   }
 
   // Model selection is still resolved during prompt assembly, but the protocol
-  // text itself is added to the per-turn ordinary pre-step messages below.
+  // text itself is added at most once per Session by the ordinary pre-step path.
   on('system-prompt/assemble', async (_assembly: any, assemblyContext: any, next: () => Promise<any>) => {
     const result = await next()
     const agent = assemblyContext?.agent as Agent | undefined
@@ -1130,7 +1139,7 @@ export function apply(ctx: Context): void {
 
     const continuationState: TurnContinuationState = preserveTurnState && previousTurnState !== undefined
       ? previousTurnState
-      : { turn: payload.turn, attempts: 0, protocolInjected: false }
+      : { turn: payload.turn, attempts: 0 }
     turnStates.set(payload.agent, continuationState)
     const state: StepState = {
       agent: payload.agent as Agent,
@@ -1165,11 +1174,11 @@ export function apply(ctx: Context): void {
       }
       if (payload.signal?.aborted) return decision
       if (hasProtocolContext(decision.messages)) {
-        continuationState.protocolInjected = true
+        runtime.protocolInjected = true
         return decision
       }
-      if (continuationState.protocolInjected) return decision
-      continuationState.protocolInjected = true
+      if (runtime.protocolInjected) return decision
+      runtime.protocolInjected = true
       return {
         ...decision,
         messages: [...decision.messages, protocolContextMessage()],
