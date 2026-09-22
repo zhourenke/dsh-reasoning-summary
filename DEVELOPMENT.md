@@ -15,14 +15,14 @@
 | `lib/types/index.d.ts` | 宿主类型声明，**必须提交** |
 | `lib/types/client.d.ts` | 浏览器类型声明，**必须提交** |
 | `test/core.test.mjs` | 纯函数与解析器（11 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素 |
-| `test/runtime.test.mjs` | 宿主事件链（65 项）：模拟 ctx 走完整 step 生命周期 |
+| `test/runtime.test.mjs` | 宿主事件链（66 项）：模拟 ctx 走完整 step 生命周期 |
 | `test/client.test.mjs` | 浏览器半边（11 项）：**真正执行** `lib/client.js` |
 | `cordis.patch.yml` | profile 层插入声明 |
 | `tsconfig.json` | 宿主半边配置（Node，无 DOM） |
 | `tsconfig.client.json` | 浏览器半边配置（DOM，无 Node 类型） |
 | `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（「供应链策略」） |
 
-上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **87**，同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
+上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **88**，同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
 
 ## 本地开发与构建
 

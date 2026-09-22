@@ -640,6 +640,42 @@ test('protocol context stays suppressed after plugin reactivation over the same 
   assert.equal(secondAgent.session.deriveMessages().filter(isProtocolMessage).length, 1)
 })
 
+test('a step that already carries the protocol context is not injected a second time', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
+  const harness = makeHarness({ models: [route] })
+  const agent = makeAgent(harness, 'protocol-dedup')
+
+  // A cold route never receives the prompt, so warm it with one real tool step.
+  await admitRoute(harness, agent, { ...route, turn: 1, step: 1 })
+  emitRuntimeToolLifecycle(harness, agent, { turn: 1, step: 1, callId: 'protocol-dedup-warmup' })
+
+  // Something else already admitted a protocol context for this step: a second
+  // instance of this plugin (the profile patch layer inserting the entry twice),
+  // or a context written by an earlier prompt revision. The durably derived flag
+  // is still false here, so only the structural check can keep the step from
+  // carrying two copies. The text is deliberately not the shipped prompt:
+  // recognition is by message shape, not by copy.
+  const seeded = createUserMessage({
+    content: [{ type: 'text', text: 'protocol context admitted by another writer' }],
+    source: { kind: 'plugin', plugin: 'reasoning-summary' },
+  })
+  await assembleWithRoute(harness, agent, route.provider, route.model)
+  const inner = { kind: 'enter', messages: [seeded] }
+  const decision = await harness.listeners.get('agent/pre-step')({ agent, turn: 1, step: 2 }, async () => inner)
+
+  assert.equal(decision, inner, 'the admitted decision must pass through unchanged')
+  assert.equal(decision.messages.length, 1, 'no second protocol context may be appended')
+
+  appendDecisionMessages(agent, decision)
+  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 1)
+
+  // Recognizing it also marks the Session as having its protocol context, so the
+  // following step stays clean without injecting one of its own.
+  const laterStep = await admitRoute(harness, agent, { ...route, turn: 1, step: 3 })
+  assert.equal(laterStep.prompt, '')
+  assert.equal(agent.session.deriveMessages().filter(isProtocolMessage).length, 1)
+})
+
 test('route changes preserve assembly variables and sections without a snapshot context', async () => {
   const selectedRoute = { provider: 'cotton-codex', model: 'gpt-5.6-terra' }
   const otherRoute = { provider: 'bailian', model: 'deepseek-v4-flash' }
