@@ -46,6 +46,21 @@ pnpm run build
 git status --porcelain   # 必须为空；有输出说明产物没跟上源码
 ```
 
+**产物上的"已修改"有一种假阳性，判据要用内容哈希。** 出现条件：先有一步 **git 写产物**的操作（`git checkout -- lib/index.js`、`git stash`、还原产物），随后又跑了一次 `pnpm run build`。本机 `core.autocrlf=true`，前一步按 CRLF 写文件并把 **CRLF 的尺寸**记进索引，`tsc` 重写的是 LF——本次实测索引 56764 字节、实际 55538 字节。stat 对不上，`git status` 就报 `M lib/index.js`，而 `git diff` / `git diff --numstat` 是**空的**：clean 过滤后的内容与 blob 完全一致。发布指南「提交前验证清单」第 3 步那条判据会遇到同样的情形。
+
+```powershell
+git hash-object --path=lib/index.js lib/index.js   # 经 clean filter，等于提交时的内容
+git rev-parse HEAD:lib/index.js                    # 与上一行相同即无漂移
+```
+
+**不要用"再 checkout 一次"或重写产物去"修"它**——那只会重新写出 CRLF 状态。刷新索引即可，blob 相同时不会暂存任何东西：
+
+```powershell
+git add lib/index.js
+```
+
+反方向还有一种**正常**情况：`src/` 改了而 `lib/` **字节未变**。纯类型改动（例如只加一行 `import type {} from '…'`）会被 `tsc` 完全擦除，产物与源码仍然一致，此时"把 `lib/` 一并提交"根本没有东西可提交。先看 `git status` 里有没有 `lib/`，不要为了凑这条规矩去重写产物。
+
 ## 开发挂载：让 DSH 加载你改的代码
 
 用目录连接点把插件挂进 profile 的 `node_modules`，改完 `pnpm run build` 再重启即可，不必每次重新安装：
