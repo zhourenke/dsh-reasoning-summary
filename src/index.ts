@@ -64,11 +64,6 @@ export interface ModelSelection {
   model: string
 }
 
-export interface ReasoningSummaryConfig {
-  /** Exact provider/model routes for which this feature is active. */
-  models: ModelSelection[]
-}
-
 /**
  * The profile entry's configuration as the loader hands it over: `models` is
  * volatile, so it arrives as a box whose `get()` answers the current value

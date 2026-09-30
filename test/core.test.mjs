@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   Config,
   MISSING_TEXT,
   PARTIAL_TEXT,
+  SETTINGS_NAMESPACE,
   inspectSummary,
   normalizeTextBlocks,
   routeKey,
@@ -34,6 +36,23 @@ test('settings accept exact model routes and reject an empty provider', () => {
     [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
   )
   assert.throws(() => Config({ models: [{ provider: '', model: 'x' }] }))
+})
+
+test('the row id is one spelling across the patch, the host half and the browser half', () => {
+  // Three consumers read this id: the profile patch entry's `id`, the namespace
+  // the browser half passes to `ctx.configForms` (and declares as its seat's
+  // locale), and the `<row id>` half of the `plugins.row.config` key. A mismatch
+  // leaves the row's page permanently form-less with only a warning, so the
+  // spellings are pinned against each other here rather than trusted.
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const patched = [...patch.matchAll(/^\s*- id:\s*(\S+)\s*$/gm)].map((match) => match[1])
+  assert.deepEqual(patched, [SETTINGS_NAMESPACE])
+
+  const client = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
+  assert.match(client, new RegExp(`const NS = '${SETTINGS_NAMESPACE}'`))
+  assert.match(client, /key: `\$\{PLUGIN_ID\}#\$\{NS\}`/)
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml')
 })
 
 test('route matching uses provider and model as one exact key', () => {

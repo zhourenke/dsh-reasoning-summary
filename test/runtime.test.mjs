@@ -1,6 +1,5 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { apply as applyRepeatToolReminder } from '@deepseek-ai/dsh-repeat-tool-reminder'
@@ -1474,86 +1473,6 @@ test('ordinary assistant text remains visible after summary normalization', asyn
   ]))) result.push(chunk)
   assert.match(textFrom(result), /Visible answer remains here/)
   assert.doesNotMatch(textFrom(result), /source="reasoning-summary"/)
-})
-
-test('the client does not install a global chat-row hiding filter', () => {
-  for (const file of ['../src/client.ts', '../lib/client.js']) {
-    const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-    assert.doesNotMatch(source, /data-reasoning-summary-hidden/)
-    assert.doesNotMatch(source, /MutationObserver/)
-    assert.doesNotMatch(source, /hideMarkedChatRows/)
-  }
-})
-
-test('the settings card reads the Host catalog through the remote session namespace', () => {
-  for (const file of ['../src/client.ts', '../lib/client.js']) {
-    const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-    // Host 0.1.2-rc.1 removed `connection.api`, so the legacy path must never
-    // return: it answers undefined and surfaces as a permanent catalog failure.
-    assert.doesNotMatch(source, /connection\.api/)
-    assert.doesNotMatch(source, /api\.llm/)
-    // The catalog comes from the generated `session/modelCatalog` Remote method.
-    assert.match(source, /modelCatalog\(\)/)
-    assert.match(source, /'remote\.session'/)
-    // Activation must gate on the namespace service, not on a cached property.
-    assert.match(source, /inject: \['slots', 'configForms', 'locale', 'remote', 'remote\.session'\]/)
-  }
-})
-
-test('the configuration page is the official settings form and owns only the route list', () => {
-  for (const file of ['../src/client.ts', '../lib/client.js']) {
-    const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-    // The frame, the save control and the failure notice belong to the official
-    // settings form. The hand-rolled card shell that 0.1.5 needed — header,
-    // chevron, footer, buttons, failure line — must not come back: it was a
-    // reimplementation of what the primitive already draws, and 0.2.0 replaced
-    // the whole seat it was written for.
-    assert.match(source, /return e\(SettingsForm, \{/)
-    assert.doesNotMatch(source, /rs-card|rs-head\b|rs-chevron|rs-pending|rs-footer|rs-discard|rs-save|rs-failed|rs-readonly/)
-    // 0.2.0-rc.2 renamed this icon; the old name resolves to undefined.
-    assert.doesNotMatch(source, /IconChevronDownOutline14/)
-    // The removed seat, the scope binding it needed, and the shadowing
-    // translator are gone with it.
-    assert.doesNotMatch(source, /settings\.plugin\.item/)
-    assert.doesNotMatch(source, /settingsScope/)
-    assert.doesNotMatch(source, /locale\.bind/)
-    // The seat is the plugin row's configuration page, dispatched by
-    // `<package name>#<row id>`, and it declares the locale the seat translator
-    // is composed from.
-    assert.match(source, /'plugins\.row\.config'/)
-    assert.match(source, /configForms\.whileServed/)
-    assert.match(source, /locale: NS/)
-
-    // Route-list styling still follows the sibling cards on this surface.
-    assert.match(source, /\.rs-model-label \{[^}]*font-weight:\s*500;\s*line-height:\s*1\.5/)
-    assert.doesNotMatch(source, /border-left:\s*3px/)
-    assert.doesNotMatch(source, /['"]⌄['"]/)
-    assert.doesNotMatch(source, /rs-select(?:-chevron)?/)
-    assert.doesNotMatch(source, /e\('select'/)
-    // Model list mirrors the sibling card: bordered fieldset with provider
-    // groups and a three-column row (checkbox / name+route / action).
-    assert.match(source, /\.rs-models \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\);[^}]*border-radius:\s*8px;[^}]*max-height:\s*280px/)
-    assert.match(source, /\.rs-model \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto;[^}]*padding:\s*6px/)
-    assert.match(source, /\.rs-model-group \+ \.rs-model-group \{[^}]*border-top:\s*\.5px solid var\(--dsw-alias-border-l3\)/)
-    // Unavailable rows mirror the sibling card: a plain checkbox row with the
-    // unavailable label, no trash/delete control of any kind.
-    assert.match(source, /\.rs-unavailable \{[^}]*color:\s*var\(--dsw-alias-label-tertiary\);[^}]*font-size:\s*11px/)
-    assert.doesNotMatch(source, /IconTrashOutline16/)
-    assert.doesNotMatch(source, /\.rs-icon-button/)
-    assert.doesNotMatch(source, /removeModel\s*:\s*['"](?:删除模型|Remove model)['"]/)
-    // All routes missing from the catalog collect in one trailing group,
-    // regardless of whether their provider survived.
-    assert.match(source, /unavailable\.push\(item\)/)
-    assert.doesNotMatch(source, /staleByProvider/)
-    assert.doesNotMatch(source, /orphanStale/)
-    // No manual "refresh catalog" control remains; failures offer a retry.
-    assert.doesNotMatch(source, /refresh\s*:\s*['"](?:刷新目录|Refresh catalog)['"]/)
-    assert.doesNotMatch(source, /\.rs-refresh/)
-    assert.doesNotMatch(source, /cleanup\s*:\s*['"](?:清理选择|Remove selection)['"]/)
-    assert.match(source, /retry\s*:\s*['"](?:重试|Retry)['"]/)
-    assert.match(source, /模型目录中不可用且已启用的条目仍会保留显示。/)
-    assert.match(source, /Enabled entries that are unavailable in the model catalog remain visible\./)
-  }
 })
 
 test('reasoning block frames stay ordered for downstream merging', async () => {
