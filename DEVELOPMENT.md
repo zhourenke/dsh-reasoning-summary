@@ -16,15 +16,16 @@
 | `lib/types/client.d.ts` | 浏览器类型声明，**必须提交** |
 | `icon.svg` | 插件行图标，`package.json` 的 `icon` 指向它，**必须提交** |
 | `locale/zh.json`、`locale/en.json` | 插件行的显示名称与描述（`meta.title` / `meta.description`），**必须提交** |
-| `test/core.test.mjs` | 纯函数与解析器（12 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素、`Config` 的 volatile 声明 |
-| `test/runtime.test.mjs` | 宿主事件链（66 项）：模拟 ctx 走完整 step 生命周期 |
-| `test/client.test.mjs` | 浏览器半边（16 项）：**真正执行** `lib/client.js` |
+| `test/core.test.mjs` | 纯函数与解析器（13 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素、`Config` 的 volatile 声明，以及行 id 在三处拼写的漂移守卫 |
+| `test/runtime.test.mjs` | 宿主事件链（63 项）：模拟 ctx 走完整 step 生命周期 |
+| `test/client.test.mjs` | 浏览器半边（20 项）：**真正执行** `lib/client.js` |
+| `tools/inspect-session.mjs` | 开发期工具，**不随包发布**（不在 `files` 里）：直读某个 Session 的持久日志，回答"插件在这个 Session 里到底做了什么" |
 | `cordis.patch.yml` | profile 层插入声明 |
 | `tsconfig.json` | 宿主半边配置（Node，无 DOM） |
 | `tsconfig.client.json` | 浏览器半边配置（DOM，无 Node 类型） |
 | `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（「供应链策略」） |
 
-上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **94**（12 + 66 + 16），同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
+上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **96**（13 + 63 + 20），同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
 
 ## 本地开发与构建
 
@@ -193,6 +194,44 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 **保留的自造部分与理由**：行内的裸 `<input type="checkbox">` **不是**该删的重复——官方 `Checkbox` 必须自带一个 `label` 字符串，用在这条"勾选框 + 名称 + 路由"的两行行里会套出第二层 label，兄弟插件在同一界面上也是手写 input；路由列表的 `.rs-*` 样式（边框、分组、三列网格）同理，官方没有等价物。`SPIN_NOTICE_TEXT` 与官方 `dsh-repeat-tool-reminder` 的提醒也不重复：后者按连续相同调用的次数（默认 3/5/8）在 `tools/post-execute` 上计数，本插件的提示由"同一次输出两个完整摘要且零工具调用"触发，判据、时机与措辞都不同。
 
 **显示元数据**：插件行现在从包里读 `icon` 与 `locale/*.json`（`meta.title` / `meta.description`），因此这两样必须进 `files` 与 `exports`；实测 `readPluginMeta` 返回两种语言的 title/description 与一个 `data:image/svg+xml;base64,…` 图标。缺 description 时列表会静默退回包名，所以这两件事要一起改。
+
+### 17. 一轮审计：剩下来的"死代码"其实在测试桩里
+
+**审计方法先划掉一半可能性**：两个 tsconfig 都开了 `noUnusedLocals` / `noUnusedParameters`，所以"没人用的局部声明"编译期就不可能存在。真正的死代码只剩四类：没人用的导出、没人用的 locale 键、没人用的 CSS、不可达分支，以及**守着早已不存在的宿主版本或已删除实现名的断言**。
+
+**删掉的**：宿主半边的 `export interface ReasoningSummaryConfig`（源码、测试、文档里 0 引用，`ModelSelection` 仍在用所以留下）；`test/runtime.test.mjs` 里三个只属于上一代浏览器半边的用例（chat 行隐藏过滤器、走 `remote.session` 读目录、以及那个把 `rs-card|…` 全部外壳名一次断言的用例）——它们守的是 `connection.api`、`api.llm` 这类旧宿主 API 和 `rs-select`、`IconTrashOutline16`、`.rs-refresh` 这类被官方原语取代的实现名，以及随之孤立的 `readFileSync` import。
+
+**留下并加固的**：`SETTINGS_NAMESPACE` 看着像只给浏览器半边用的常量，其实是座位键的一半——行 id 在**三处**拼写：`cordis.patch.yml` 的 `- id:`、`client.ts` 的 `NS`、注册时的 `key: \`${PLUGIN_ID}#${NS}\``。任一处不一致的结果是一个**永远拿不到 form 的页面**，而且只在控制台留一行警告，界面看起来只是"没渲染配置"。所以这里不该删，而该补一条漂移守卫：`test/core.test.mjs` 现在把 patch 的 `- id:` 列表、`client.ts` 里的 `NS` 字面量、`key` 模板与 `manifest.dsh.bundle.patch` 一起断言。
+
+**真正的死代码在测试桩里**：`test/client.test.mjs` 的 `useState` setter 原本是空函数，注释还写着 "keeps no state between renders"。代价是两处断言降级成"读源码正则"——既看不到目录加载完成后的渲染，也看不到 `failed` 标志。现在桩按 hook 槽位保存状态，`renderSettled()` 重放状态更新引发的渲染轮次（`renderPass()` 每轮重置槽位游标并清空本轮 elements）。于是**源码正则换成行为断言**：拒绝写入后官方表单的 `state.failed === true`；暂存一次勾选让 `dirty` 变真、接受写入后变假，且暂存期间不产生任何写入。
+
+**四类里剩下的都逐项查过，结论是干净的**：客户端那份样式表 14 个 `rs-*` 类**两头都对得上**（定义了都在用，用了都有定义，没有悬空引用）；客户端两份字典各 15 个键，与 `t()` 的 15 处引用**一对一**，且 `zh` / `en` 键名完全一致、没有只在一侧的键（漏一个键会让界面直接显示键名，而 `tsc` 看不出来）；`locale/*.json` 里只有 `meta`，它是插件行的显示元数据（`readPluginMeta` 读 `meta.title` / `meta.description`），不是界面字典，所以"没被 `t()` 用到"是正常的；两个宿主导出类型 `PluginConfig` 与 `ModelSelection` 出现在产出的 `lib/types/index.d.ts` 公共签名里（`apply(ctx: Context, config: PluginConfig)` 与 `PluginConfig.models: Volatile<ModelSelection[]>`），是活类型而非死导出——同一个位置原先那个没人引用的 `ReasoningSummaryConfig` 才是死的，已删。
+
+**顺手补上的覆盖缺口**：原来的"未就绪"用例传的是 `form: undefined`，于是 `status !== 'ready'` 那条分支**根本没被覆盖**，配套的 `loading` fixture 是死设置。现在拆成三条：入口未挂载 → 什么都不渲染；`loading` → 什么都不渲染（否则每次开行都会闪一下"不可用"）；`unavailable` → 交给官方 `SettingsForm` 的 `state.available` 与 `labels.unavailable`，插件不再自己画提示。
+
+### 18. "看不到上下文注入"是 0.2.0-rc.2 的预期行为，不是故障
+
+**先说结论**：本插件注入的文本**不会**出现在聊天记录里，这是宿主当前版本的渲染规则，任何插件侧改动都做不到，伪装成工具增删块只会污染徽标语义。
+
+**依据**：`dsh-client-ui-chat/lib/client.js` 的 `isVisibleChatNode` 要求 `node.kind !== "system-prompt"`，且 context 行必须含 `tool-addition` / `tool-removal` 内容块才可见——**纯文本注入的上下文行与 `system-prompt` 行一律不渲染**，与 `transcriptView` 模式无关（compact / standard / detailed / verbose 只控制 `foldCompletedTurns`、`stepGrouping`、`liveProcessDetail`、`settledReasoningPreview`）。`contextProducer(source)` 的 `default` 分支仍把 `reasoning-summary` 标成「上下文注入 · reasoning-summary」，但那条行现在只对带工具增删的 context 成立；系统提示词同理，它的行在列表构建阶段就被过滤掉了。
+
+**所以判据是持久日志，不是界面**：`tools/inspect-session.mjs` 直读 `$DSH_HOME/sessions/--<cwd>--/<id>/session.v4.jsonl.zstd`（也接受导出 `.zip` 与已解压的 `.jsonl`），按 `source.kind === 'reasoning-summary'` 分类，打印会话/路由/配置行/插件活动/投递/kinds 与一条 verdict；退出码 `0` 活跃、`1` 未活动、`2` 读不出来。用法：
+
+```bash
+node tools/inspect-session.mjs                 # 当前会话（读 DSH_SESSION_ID）
+node tools/inspect-session.mjs <session-id>    # 按 id 找实时日志
+node tools/inspect-session.mjs <日志或 zip 路径>
+node tools/inspect-session.mjs <目标> --json   # 机读输出
+```
+
+**它踩过并固化了四个坑，改这个工具时不要退回去**：
+
+1. 实时日志是**多帧 zstd 流**（追加写），`zstdDecompressSync` 一次只解第一帧——必须按帧魔数 `28 b5 2f fd` 切分后逐帧解压。实测 30 个候选帧、0 个失败，拼出的 78 行与导出 zip 里的内容**逐字节一致**（311092 字节）。
+2. 导出 zip 是**流式单条目**：本地头里的 `compressedSize` / `uncompressedSize` 都是 0，长度只在 data descriptor（`50 4b 07 08`）里，不能按头解。
+3. 同一消息**既有 `agent/inbox/spliced` 投递又有 `user/message` 持久记录**（两者的 `message.id` 相同），两边都数会让每次 relay 翻倍。现在以持久记录为准，投递单独统计，并核对"每个投递都有持久对应"——这条检查本身有意义：投递了却没有持久记录，意味着这一步消费了记录里看不到的东西。
+4. 路由要读**最后一次** `model/selection`。会话中途可以换模型，只读第一次会把一个早已离开配置路由的会话判成"已选中"（本工作区的会话实测有 17 次选择）。
+
+**实测（2026-09-30，宿主 0.2.0-rc.2）**：新会话 `session-6a9059a5-…` 判 ACTIVE——协议上下文 1 段（seq 24，1166 字符，无 `form`）、relay 6 次（5 完整 + 1 `missing`）、投递 6 次全部有持久对应、kinds 去重后 `reasoning-summary` 7 条、旧形状 `plugin` 0 条。而**本工作区的长会话判 INACTIVE 且不是故障**：它当前路由 `parkgarden/deepseek-v4.1-flash` 不在配置的两条里，插件按设计不介入（该会话里 460 条 `plugin:reasoning-summary` 是迁移前形状，工具会单独标出来）。这两条合起来正好说明为什么"界面没动静"不能拿来当判据。
 
 ## 测试要点
 
