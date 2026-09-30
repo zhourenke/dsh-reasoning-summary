@@ -10,6 +10,11 @@
  * component owns nothing but the catalog-driven route list. Changes are staged
  * locally and committed with a single revision-fenced `models` write.
  *
+ * The form's availability states stay the official form's too. A `loading` form
+ * renders nothing here so the official unavailable notice cannot flash while the
+ * describe read is in flight; an `unavailable` one is passed through so that
+ * notice is drawn by the primitive that owns it.
+ *
  * The route list follows the sibling cards of the same surface: rows are
  * checkbox-only, and routes that vanished from the catalog stay listed in a
  * trailing "saved but currently unavailable" group until Save removes them.
@@ -163,6 +168,11 @@ window.__ModuleLoader__.load({
       // The plugins page mounts both views as separate entries, so every hook
       // runs in both and opening a row can never change the hook order.
       const isPage = props.view === 'page' && form !== undefined
+      // `ready` is the official form's own availability flag: the config form
+      // starts `loading` while the Host `settings.describe` read is in flight,
+      // holds `unavailable` while the Host serves no document for the namespace,
+      // and becomes `ready` once it holds one.
+      const ready = form?.state.status === 'ready'
       const revision = form?.state.revision
       const value = form?.state.value ?? { models: [] }
 
@@ -204,9 +214,10 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // Only the page body needs the catalog: the one-liner must stay a single
-      // line of text and must not reach for the host on every list render.
-      useEffect(() => { if (isPage) void loadCatalog() }, [isPage])
+      // Only a ready page body needs the catalog: the one-liner must stay a
+      // single line of text and must not reach for the host on every list
+      // render, and a form that is not ready yet cannot display the result.
+      useEffect(() => { if (isPage && ready) void loadCatalog() }, [isPage, ready])
 
       const catalogKeys = useMemo(() => {
         if (!catalog) return null
@@ -218,7 +229,14 @@ window.__ModuleLoader__.load({
 
       // The summary entry is the row's one-liner; only the page entry has a form.
       if (props.view !== 'page') return e('span', null, t('description'))
-      if (form === undefined || form.state.status !== 'ready') return null
+      // Two non-ready cases are answered here, and only one of them is ours. A
+      // page entry mounted without a form has no state to read at all, and a form
+      // that is still `loading` must render nothing so the official unavailable
+      // notice cannot flash on every row open while the describe read is in
+      // flight. Every other status — a namespace the Host serves no document for
+      // — is handed to the official form, whose own `available: false` branch
+      // draws that notice and ignores the children passed alongside it.
+      if (form === undefined || form.state.status === 'loading') return null
 
       // Candidate rows mirror the sibling cards on this surface exactly: a row
       // exists for every catalog model plus every saved route that is no longer
@@ -316,7 +334,7 @@ window.__ModuleLoader__.load({
           saving: t('saving'),
         },
         state: {
-          available: form.state.status === 'ready',
+          available: ready,
           writable,
           dirty,
           invalid: false,

@@ -10,6 +10,11 @@
  * component owns nothing but the catalog-driven route list. Changes are staged
  * locally and committed with a single revision-fenced `models` write.
  *
+ * The form's availability states stay the official form's too. A `loading` form
+ * renders nothing here so the official unavailable notice cannot flash while the
+ * describe read is in flight; an `unavailable` one is passed through so that
+ * notice is drawn by the primitive that owns it.
+ *
  * The route list follows the sibling cards of the same surface: rows are
  * checkbox-only, and routes that vanished from the catalog stay listed in a
  * trailing "saved but currently unavailable" group until Save removes them.

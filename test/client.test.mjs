@@ -44,11 +44,12 @@ import { readFileSync } from 'node:fs'
 //    `{ available, writable, dirty, invalid, saving, failed }`
 //    (dsh-client-ui-primitives/lib/types/settings-form/SettingsForm.d.ts).
 //
-// NOT modelled here: React's reconciler and hook semantics (the stub runs effects
-// and lazy initializers but keeps no state between renders), the host's real slot
-// registry, and the plugins page that dispatches the slot. This file proves the
-// plugin's side of the contract; the Host's side is proven by the card appearing
-// in a running deployment.
+// NOT modelled here: React's reconciler and hook semantics (the stub keeps
+// per-slot state and replays only the passes a test drives — no scheduling, no
+// batching, no dependency arrays), the host's real slot registry, and the
+// plugins page that dispatches the slot. This file proves the plugin's side of
+// the contract; the Host's side is proven by the card appearing in a running
+// deployment.
 // ---------------------------------------------------------------------------
 
 // The browser half is a plain script: it registers itself through
@@ -72,6 +73,12 @@ const NS = 'reasoning-summary'
 function makeRequire() {
   const requested = []
   const elements = []
+  // Hook state is kept per `useState` call order, so a test can observe a state
+  // change by rendering the component again. Only `useState` consumes the slot
+  // cursor: `useMemo` and `useEffect` are stateless here. Effects still run
+  // inline, and every pass re-runs them, so a test that renders twice sees the
+  // effect fire twice — assert on the settled render, not on the call count.
+  const hooks = { slots: [], cursor: 0 }
   const primitives = {
     // A distinct identity so a test can prove the page really renders the
     // official form rather than a hand-rolled frame of its own.
@@ -86,19 +93,26 @@ function makeRequire() {
           elements.push(element)
           return element
         },
-        // The stub runs effects immediately and keeps no state between renders:
-        // it observes what a single render does, not how React schedules it.
+        // The stub runs effects immediately and models no reconciler: it
+        // observes what the passes a test drives actually render.
         useEffect: (callback) => { callback() },
         useMemo: (callback) => callback(),
         // React invokes a function initial state lazily; the card relies on it
         // to copy the saved selection out of the form.
-        useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+        useState: (initial) => {
+          const slot = hooks.cursor
+          hooks.cursor += 1
+          if (hooks.slots.length <= slot) hooks.slots.push(typeof initial === 'function' ? initial() : initial)
+          return [hooks.slots[slot], (next) => {
+            hooks.slots[slot] = typeof next === 'function' ? next(hooks.slots[slot]) : next
+          }]
+        },
       }
     }
     if (id === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected require("${id}")`)
   }
-  return { require, requested, elements, primitives }
+  return { require, requested, elements, primitives, hooks }
 }
 
 /** The official translator's own substitution rule, used to compose `kit.t`. */
@@ -198,6 +212,30 @@ function render(state, props) {
   const { render: mount } = state.registered[0]
   const element = mount(props)
   return { element, card: element.component(element.props) }
+}
+
+/** One render pass: hook slots restart, and only this pass's elements remain. */
+function renderPass(state, props, handle) {
+  const { render: mount } = state.registered[0]
+  const element = mount(props)
+  handle.hooks.cursor = 0
+  handle.elements.length = 0
+  return { element, card: element.component(element.props) }
+}
+
+/**
+ * Render through the passes the card's own state updates require, the way the
+ * renderer replays them after a `setState`. A single pass cannot observe what a
+ * later one draws: the model catalog arrives from the Host, and a save moves
+ * `dirty` and `failed`. `handle.elements` holds the settled pass afterwards.
+ */
+async function renderSettled(state, props, handle, passes = 2) {
+  let settled
+  for (let pass = 0; pass < passes; pass += 1) {
+    if (pass > 0) await new Promise((resolve) => setImmediate(resolve))
+    settled = renderPass(state, props, handle)
+  }
+  return settled
 }
 
 function findElement(elements, predicate) {
@@ -319,16 +357,91 @@ test('the page body renders the official settings form with the Host form value'
   assert.equal(checkbox.props.checked, true)
 })
 
-test('a page that is not ready renders nothing rather than an empty card', () => {
+test('a page entry mounted without the owner form renders nothing', () => {
   const { require, elements } = makeRequire()
   const plugin = definition.factory(require)
-  const { ctx, state } = makeCtx({ form: { state: { status: 'loading', value: undefined, writable: true } } })
+  const { ctx, state } = makeCtx()
   plugin.apply(ctx)
 
   const t = kitFor(state, NS)
   const { card } = render(state, { view: 'page', form: undefined, t })
   assert.equal(card, null)
   assert.equal(findElement(elements, (el) => el.component === 'form'), undefined)
+})
+
+test('a loading form renders nothing so the unavailable notice cannot flash', () => {
+  // `loading` is the config form's initial status while the Host describe read
+  // is in flight (dsh-client-ui-settings/lib/client.js:1118), so rendering the
+  // official notice here would flash "not available" on every row open.
+  const form = { state: { status: 'loading', value: undefined, writable: false }, mutate: async () => true }
+  const { require, elements, primitives } = makeRequire()
+  const plugin = definition.factory(require)
+  const { ctx, state } = makeCtx({ form, withCatalog: true })
+  plugin.apply(ctx)
+
+  const { card } = render(state, { view: 'page', form, t: kitFor(state, NS) })
+  assert.equal(card, null)
+  assert.equal(findElement(elements, (el) => el.component === primitives.SettingsForm), undefined)
+  // The catalog read is gated on readiness too: a list that cannot be drawn must
+  // not cost a Host round trip.
+  assert.equal(state.modelCatalogCalls, 0)
+})
+
+test('an unavailable form is handed to the official notice instead of answered here', () => {
+  // `unavailable` is held while the Host serves no document for the namespace
+  // (dsh-client-ui-settings/lib/client.js:1227-1231), which the official form
+  // answers with its own `available: false` branch.
+  const form = { state: { status: 'unavailable', value: undefined, writable: false }, mutate: async () => true }
+  const { require, elements, primitives } = makeRequire()
+  const plugin = definition.factory(require)
+  const { ctx, state } = makeCtx({ form, withCatalog: true })
+  plugin.apply(ctx)
+
+  const t = kitFor(state, NS)
+  render(state, { view: 'page', form, t })
+  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
+  assert.ok(settingsForm, 'the official form owns the unavailable presentation')
+  assert.equal(settingsForm.props.state.available, false)
+  assert.equal(settingsForm.props.labels.unavailable, t('formUnavailable'))
+  // The primitive draws nothing but its notice in this state, children aside.
+  assert.ok(settingsForm.children.length > 0)
+  assert.equal(state.modelCatalogCalls, 0)
+})
+
+test('a saved route missing from the catalog stays listed as unavailable', async () => {
+  const retired = { provider: 'retired-provider', model: 'retired-model' }
+  const handle = makeRequire()
+  const plugin = definition.factory(handle.require)
+  const { ctx, state, form } = makeCtx({
+    models: [retired],
+    withCatalog: true,
+    groups: [{ id: 'cotton-codex', name: 'Cotton Codex', models: [{ id: 'gpt-5.6-luna', name: 'Luna' }] }],
+  })
+  plugin.apply(ctx)
+
+  const t = kitFor(state, NS)
+  // Two passes: the first starts the catalog read, the second draws it.
+  await renderSettled(state, { view: 'page', form, t }, handle)
+  const { elements } = handle
+
+  // One row per catalog model plus one for the saved route the catalog no longer
+  // carries: a vanished selection is never silently dropped.
+  const rows = elements.filter((el) => el.component?.name === 'ModelRow')
+  assert.deepEqual(rows.map((row) => row.props.item.model).sort(), ['gpt-5.6-luna', 'retired-model'])
+  const row = rows.find((candidate) => candidate.props.item.provider === 'retired-provider')
+  assert.equal(row.props.available, false)
+  assert.equal(row.props.checked, true)
+  assert.equal(row.props.disabled, false, 'it must stay toggleable while the form is writable')
+
+  // It collects in a trailing group under the saved-but-unavailable legend...
+  const legend = findElement(elements, (el) => (
+    el.props?.className === 'rs-provider' && el.children[0] === t('unavailableGroup')
+  ))
+  assert.ok(legend, 'the trailing group must be labelled as saved-but-unavailable')
+  // ...and keeps the same checkbox row shape, carrying the unavailable label.
+  const rowElement = row.component(row.props)
+  assert.ok(rowElement.children.some((child) => child?.props?.className === 'rs-unavailable'))
+  assert.ok(rowElement.children.some((child) => child?.component === 'input'))
 })
 
 test('save commits one revision-fenced write for the whole route list', async () => {
@@ -360,8 +473,8 @@ test('save commits one revision-fenced write for the whole route list', async ()
 
 test('a refused write is treated as a failure, not as a silent success', async () => {
   const writes = []
-  const { require, elements, primitives } = makeRequire()
-  const plugin = definition.factory(require)
+  const handle = makeRequire()
+  const plugin = definition.factory(handle.require)
   const form = {
     state: { status: 'ready', value: { models: [] }, writable: true, revision: 3 },
     mutate: async (ops, expectedRevision) => {
@@ -374,15 +487,57 @@ test('a refused write is treated as a failure, not as a silent success', async (
 
   const t = kitFor(state, NS)
   render(state, { view: 'page', form, t })
-  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
+  const settingsForm = findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
   await settingsForm.props.onSave()
   assert.equal(writes.length, 1)
   assert.equal(writes[0].expectedRevision, 3)
 
-  // The stub keeps no state between renders, so the resulting `failed` flag
-  // cannot be observed here; the branch that raises it is asserted instead. The
-  // point is that only an accepted write clears `dirty`.
-  assert.match(source, /if \(accepted\)\s*\{?\s*setDirty\(false\);?\s*\}?\s*else\s*\{?\s*setFailed\(true\);?/)
+  // A refused write must surface as the official form's own failure state; a
+  // silent success would leave the user thinking the list was saved.
+  renderPass(state, { view: 'page', form, t }, handle)
+  const settled = findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
+  assert.equal(settled.props.state.failed, true)
+  assert.equal(settled.props.state.saving, false)
+})
+
+test('a staged change marks the form dirty and an accepted save clears it', async () => {
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
+  const writes = []
+  const handle = makeRequire()
+  const plugin = definition.factory(handle.require)
+  const form = {
+    state: { status: 'ready', value: { models: [route] }, writable: true, revision: 11 },
+    mutate: async (ops, expectedRevision) => {
+      writes.push({ ops, expectedRevision })
+      return true
+    },
+  }
+  const { ctx, state } = makeCtx({
+    form,
+    withCatalog: true,
+    groups: [{ id: 'cotton-codex', name: 'Cotton Codex', models: [{ id: 'gpt-5.6-luna', name: 'Luna' }] }],
+  })
+  plugin.apply(ctx)
+
+  const t = kitFor(state, NS)
+  const props = { view: 'page', form, t }
+  const officialForm = () => findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
+  await renderSettled(state, props, handle)
+  assert.equal(officialForm().props.state.dirty, false)
+
+  // Unchecking the route stages a draft and marks the entry dirty; nothing
+  // reaches the Host until the official form's own Save is used.
+  const row = handle.elements.find((el) => el.component?.name === 'ModelRow')
+  row.props.onToggle()
+  renderPass(state, props, handle)
+  assert.equal(officialForm().props.state.dirty, true)
+  assert.equal(writes.length, 0, 'staging a draft must not write')
+
+  await officialForm().props.onSave()
+  renderPass(state, props, handle)
+  assert.equal(officialForm().props.state.dirty, false)
+  assert.equal(officialForm().props.state.failed, false)
+  assert.deepEqual(writes, [{ ops: [{ op: 'set', path: ['models'], value: [] }], expectedRevision: 11 }])
 })
 
 test('a read-only form still renders but can never write', async () => {
@@ -502,4 +657,11 @@ test('the official form owns the chrome and the deleted seat stays deleted', () 
   assert.match(source, /return e\(SettingsForm, \{/)
   // The removed icon must not be resurrected; 0.2.0-rc.2 renamed it.
   assert.doesNotMatch(source, /IconChevronDownOutline14/)
+  // This half never hides chat rows from the page. Host 0.2.0-rc.2 renders no
+  // row for a text-only injected context (dsh-client-ui-chat/lib/client.js:7719),
+  // and the answer to that belongs to the Host's node filter, not to a DOM patch
+  // of ours.
+  assert.doesNotMatch(source, /data-reasoning-summary-hidden/)
+  assert.doesNotMatch(source, /MutationObserver/)
+  assert.doesNotMatch(source, /hideMarkedChatRows/)
 })
