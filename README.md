@@ -24,7 +24,7 @@ DSH 默认会保留模型的思考过程并传进下一步循环，只有触发�
 dsh plugin --profile web add "github:zhourenke/dsh-reasoning-summary"
 ```
 
-安装后需要重启 DSH 并刷新页面，随后可以在 **设置 → 插件 → 推理摘要** 看到本插件的配置选项。
+安装后需要重启 DSH 并刷新页面。本插件在 DSH 里没有独立的设置页：配置入口是 **左侧边栏「插件」→ 找到本插件的行 → 包含的组件 → 配置 推理摘要**。
 
 卸载：
 
@@ -36,22 +36,24 @@ dsh plugin --profile web remove @zhourenke/dsh-reasoning-summary
 
 插件默认**完全关闭**（`models` 为空）。
 
-在 **设置 → 插件 → 推理摘要** 里勾选要触发的路由并保存即可，卡片读的是 DSH 实时的模型目录。
+在 **左侧边栏「插件」→ 本插件的行 → 包含的组件 → 配置 推理摘要** 里勾选要触发的路由并保存即可，页面读的是 DSH 实时的模型目录。
 
-也可以直接编辑 `~/.dsh/settings.yaml`：
+配置只落在 profile 里那一行插件条目上（键为 `@zhourenke/dsh-reasoning-summary#reasoning-summary`），**旧版的 `~/.dsh/settings.yaml` 这一层已不再被读取**。维护者也可以在这一行下直接写 `config:`：
 
 ```yaml
-reasoning-summary:
-  models:
-    - provider: <provider-id>
-      model: <model-id>
+# <profile>/cordis.patch.yml
+- id: reasoning-summary
+  config:
+    models:
+      - provider: <provider-id>
+        model: <model-id>
 ```
 
-`provider` 与 `model` 必须与 DSH 里实际的 id 逐字一致，两个都要匹配；写错的条目不会报错，只是不生效（在设置卡片里勾选就不会写错）。
+`provider` 与 `model` 必须与 DSH 里实际的 id 逐字一致，两个都要匹配；写错的条目不会报错，只是不生效（在页面里勾选就不会写错）。
 
 **保存即生效，无需重启无需刷新网页。**
 
-确认它在工作：被选中的模型在每步最后一个工具调用之后，界面上会弹出 **注入上下文 · reasoning-summary** 提示。
+确认它在工作：被选中的模型在每步最后一个工具调用之后，界面上会弹出 **上下文注入 · reasoning-summary** 提示。
 
 ## 配置
 
@@ -60,8 +62,8 @@ reasoning-summary:
 | `models` | array | `[]` | 触发路由列表，每项为 `{ provider, model }`。**空列表是唯一的关闭状态**，也是默认值。 |
 
 - `provider` 与 `model` 必须**同时**匹配；同一个 model 挂在另一个 provider 下不会启用那条路由。
-- 旧版本留下的无关字段会在读取时被归一化丢弃，不会导致加载失败。
-- 设置卡片只改本插件的 namespace，不影响 DSH 通用的模型设置；模型目录里当前不可用的已启用条目会保留在「已保存但当前不可用」分组中，等你手动取消勾选。
+- 配置文档里与本插件无关的字段会原样留在文档里，但插件只读 `models`，它们不影响加载也不会生效。
+- 设置页面只改本插件的 namespace，不影响 DSH 通用的模型设置；模型目录里当前不可用的已启用条目会保留在「已保存但当前不可用」分组中，等你手动取消勾选。
 
 ## 插件要求模型做什么
 
@@ -151,7 +153,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 - 它不改变会话历史的可见范围，所有模型看到的历史是一致的。
 - 插件要求的摘要具体到文件 / 命令 / 观察结果与下一步动作。
 - `[Action summary: missing]` / `[Action summary: partial]` 表示上一条摘要没写全；`[Continue after reasoning-only response]` 表示上一轮只有推理、没有动作也没有答复。
-- 判断插件是否生效：工具步骤后界面上出现 **注入上下文 · reasoning-summary** 提示。
+- 判断插件是否生效：工具步骤后界面上出现 **上下文注入 · reasoning-summary** 提示。
 
 ## 它管不到什么
 
@@ -171,7 +173,7 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 ## 兼容性
 
-在 **DSH v0.1.5-rc.1**（2026-09）下测试通过。
+在 **DSH v0.2.0-rc.2**（2026-09）下测试通过。
 
 ## 许可证
 

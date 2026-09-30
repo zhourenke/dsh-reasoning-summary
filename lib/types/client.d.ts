@@ -1,18 +1,18 @@
 /**
  * Browser face for @zhourenke/dsh-reasoning-summary.
  *
- * The card deliberately uses the configurable-plugin slot owned by DSH's
- * official settings surface. It stages changes locally and writes only on
- * Save, while the model catalog is read live from the host API.
+ * The card uses the configuration page owned by DSH's plugins surface. Our
+ * installed row's page is the `plugins.row.config` seat, dispatched by
+ * `<package name>#<row id>` and registered only while the Host serves the
+ * `reasoning-summary` namespace. The plugins page supplies the Host form —
+ * the accepted values, the entry revision, and the revision-fenced write — and
+ * draws the frame, the save control, and the failure notice itself, so this
+ * component owns nothing but the catalog-driven route list. Changes are staged
+ * locally and committed with a single revision-fenced `models` write.
  *
- * The card chrome and the model list follow the current host's peer cards:
- * `PluginCard` (dsh-client-ui-settings-plugins) for the collapsible shell and
- * `SubagentModelSelectionCard` (same package) for the bordered model list with
- * provider groups, so this plugin's settings entry looks like the sibling
- * cards in the same settings page. Routes that vanished from the catalog stay
- * listed as unchecked-able rows in a trailing "saved but currently
- * unavailable" group, exactly like the Subagent card: the only way to remove
- * one is to uncheck it and save; there is no separate delete control.
+ * The route list follows the sibling cards of the same surface: rows are
+ * checkbox-only, and routes that vanished from the catalog stay listed in a
+ * trailing "saved but currently unavailable" group until Save removes them.
  */
 interface Window {
     __ModuleLoader__: {

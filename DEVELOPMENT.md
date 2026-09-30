@@ -8,21 +8,23 @@
 
 | 路径 | 说明 |
 |---|---|
-| `src/index.ts` | 宿主半边全部实现：设置、每 Session 一次的普通上下文提示注入、流拦截、摘要规范化、relay 与 continuation |
-| `src/client.ts` | 浏览器半边：设置页里的一张模型选择卡片（纯脚本，无 `import`） |
+| `src/index.ts` | 宿主半边全部实现：设置读取、每 Session 一次的普通上下文提示注入、流拦截、摘要规范化、relay 与 continuation |
+| `src/client.ts` | 浏览器半边：插件页里本插件那一行的配置页（纯脚本，无 `import`） |
 | `lib/index.js` | 宿主编译产物，**必须提交**（路线 A） |
 | `lib/client.js` | 浏览器编译产物，**必须提交** |
 | `lib/types/index.d.ts` | 宿主类型声明，**必须提交** |
 | `lib/types/client.d.ts` | 浏览器类型声明，**必须提交** |
-| `test/core.test.mjs` | 纯函数与解析器（11 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素 |
+| `icon.svg` | 插件行图标，`package.json` 的 `icon` 指向它，**必须提交** |
+| `locale/zh.json`、`locale/en.json` | 插件行的显示名称与描述（`meta.title` / `meta.description`），**必须提交** |
+| `test/core.test.mjs` | 纯函数与解析器（12 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素、`Config` 的 volatile 声明 |
 | `test/runtime.test.mjs` | 宿主事件链（66 项）：模拟 ctx 走完整 step 生命周期 |
-| `test/client.test.mjs` | 浏览器半边（11 项）：**真正执行** `lib/client.js` |
+| `test/client.test.mjs` | 浏览器半边（16 项）：**真正执行** `lib/client.js` |
 | `cordis.patch.yml` | profile 层插入声明 |
 | `tsconfig.json` | 宿主半边配置（Node，无 DOM） |
 | `tsconfig.client.json` | 浏览器半边配置（DOM，无 Node 类型） |
 | `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（「供应链策略」） |
 
-上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **88**，同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
+上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **94**（12 + 66 + 16），同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
 
 ## 本地开发与构建
 
@@ -75,22 +77,22 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **代码改动的生效方式分两半**：宿主半边改完必须**重启 DSH**；浏览器半边改完在重启后还需要**刷新页面**（`lib/client.js` 由 ModuleLoader 在页面加载时取用）。只测宿主半边时不必管卡片，但反过来只刷新页面不会让宿主改动生效。
 
-**配置改动则与重启无关**：`settings.yaml` 与 profile 补丁层都是热重载的，改完立刻生效，两边都不用重启。把这条与上面的代码改动分开记，就不会写出"改配置要重启"这种文档错误。
+**配置改动则与重启无关**：profile 补丁层是热重载的，改完立刻生效，两边都不用重启。把这条与上面的代码改动分开记，就不会写出"改配置要重启"这种文档错误。
 
-## 配置落点：`settings.yaml` 与 profile 补丁
+## 配置落点：profile 里的插件条目
 
-同一个 `config` 有两个写入点，README 面向使用者只讲第一个：
+**`<harness home>/settings.yaml` 这一层已经不存在了**：0.1.7 起设置按插件行归属，`~/.dsh/settings.yaml` 不再被读取。现在只有一个落点——profile 里本插件那一行条目，两种写法都是热重载：
 
 | 落点 | 谁写它 | 形态 | 生效 |
 |---|---|---|---|
-| `<harness home>/settings.yaml` | 设置卡片（经由设置服务）或用户手改 | **顶层键 = namespace**：`reasoning-summary:` 下直接放 `models:` | 保存即生效（热重载） |
+| profile 的插件条目（页面的「配置 推理摘要」） | 使用者点保存，经 Host form 的 revision-fenced 写入 | 这份配置由 loader 交给 `apply(ctx, config)`，不再有插件自己去注册的设置服务 | 保存即生效（补丁层热重载） |
 | `<profile>/cordis.patch.yml` | 用户或 profile 维护者 | `- id: reasoning-summary` 覆盖条目，其下 `config:` | 保存即生效（补丁层热重载） |
 
-`settings.yaml` 由 `dsh-settings-file` 提供：文件监听默认开启（`config.watch ?? true`，`debounceMs` 默认 100），并且用一条独占操作链把"监听重载"与"文档写入"串行化，因此不会读到写了一半的文件——这也是它能热重载而无需重启的原因。
+页面这一侧由 `dsh-client-ui-plugin-manager` 声明座位 `plugins.row.config`（`kind: 'keyed'`、`scope: 'root'`），**按 `<包名>#<行 id>` 分派**：本插件是 `@zhourenke/dsh-reasoning-summary#reasoning-summary`，其中行 id 必须与 `cordis.patch.yml` 的 `- id:` 逐字一致，否则页面永远分派不到我们的配置页。写值走 `form.mutate([{ op: 'set', path: ['models'], value }], 期望 revision)`，因此并发写入会让本次保存失败而不是静默覆盖。
 
 `cordis.patch.yml` 里**必须用 `- id:` 的覆盖写法，不要写 `- insert:`**：bundle 自带的 patch 已经把这个条目插进去了，再 `insert` 一次不报错，而是多出一个同 id 的实例——插件跑两遍、摘要逻辑算两遍。覆盖只看 `id`，所以 `name` 可省，但一旦写了就必须逐字一致，写错只会静默不生效。
 
-**不要把这个 `id` 当成配置的一部分写进 README 的用户指引**：使用者改的是 `settings.yaml`（或直接点设置卡片），那里没有 `id`、也没有 `name`，只有 namespace 分节。
+**不要把这个 `id` 当成配置的一部分写进 README 的用户指引**：使用者面对的是插件页里那一行，那里没有 `id`、也没有 `name`。
 
 连接点挂载的插件**无法用 `dsh plugin remove` 卸载**（它不在 profile 的 `dependencies` 里），需要手工删连接点再摘掉 `dsh.profile.bundles` 条目。挂载状态可用 `Get-Item … -Force | Select-Object LinkType, Target` 核对，`Target` 必须等于你正在改的仓库路径（「连接点安装 ≠ 正式安装」）。
 
@@ -98,7 +100,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 1. 宿主 `inject` 只列真正读取的服务
 
-当前是 `['agents', 'settings']`。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 且每个 Session 的首个有效步骤的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的普通 plugin user-message；宿主随后将它写入 durable `user/message` 历史。后续步骤和后续 turn 都不会重复追加；插件重新激活时会从已有 durable history 识别协议上下文并继续抑制注入。它不会调用 `agent.inject()`，也不会写成 relay 或 next-step inbox 消息。未选中或预热步骤不会追加。这条通道取代了早期的 `systemPrompt.context()` 注册与 `system-prompt/assemble` 里的 `contexts` 改写，因此也不再产生 `source.form: 'snapshot'` 的运行时快照；当前步骤已有的用户消息与 durable relay 保持原顺序，协议提示位于它们之后。
+当前是 `['agents']`。**配置不经过服务**：0.1.7 起设置由 loader 从插件行的条目读出后直接交给 `apply(ctx, config)`，插件不再自己 `register` 一个 namespace，因此 `settings` 不再是本项目读取的服务，也就不能列进 `inject`（`inject` 是硬门禁，声明了却没读是宽而无害的，但把"配置从哪来"记错会写坏文档）。**事件订阅不经过服务**：监听 `llm/stream`、`tools/result` 不需要把 `llm`、`tools` 写进 `inject`——官方 `dsh-repeat-tool-reminder` 一个宿主 inject 都不声明，照样在同一个流上监听。协议提示也不依赖 `systemPrompt`：模型选择仍在 `system-prompt/assemble` 中取最终 route，真正的提示通过 enabled、非 warmup 且每个 Session 的首个有效步骤的 `agent/pre-step` 返回值追加到 `decision.messages`，作为无 `form` 的、以本插件自声明 kind 标注的普通上下文消息；宿主随后将它写入 durable `user/message` 历史。后续步骤和后续 turn 都不会重复追加；插件重新激活时会从已有 durable history 识别协议上下文并继续抑制注入。它不会调用 `agent.inject()`，也不会写成 relay 或 next-step inbox 消息。未选中或预热步骤不会追加。这条通道取代了早期的 `systemPrompt.context()` 注册与 `system-prompt/assemble` 里的 `contexts` 改写，因此也不再产生 `source.form: 'snapshot'` 的运行时快照；当前步骤已有的用户消息与 durable relay 保持原顺序，协议提示位于它们之后。
 
 ### 2. 状态挂在 WeakMap 上，准入快照另存一份
 
@@ -132,21 +134,23 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 ### 8. 客户端半边有两条身份字面量，必须与宿主逐字一致
 
-`NS = 'reasoning-summary'` 必须与 `src/index.ts` 的 `SETTINGS_NAMESPACE` 逐字相同（它既是宿主注册的设置 namespace，也是卡片被分派时的插槽 key）；`PLUGIN_ID = '@zhourenke/dsh-reasoning-summary'` 必须与 `package.json` 的包名相同。浏览器半边不能 `import` 宿主半边，所以这两个字符串只能各写一份——`test/client.test.mjs` 会把两种拼写都断言一次，防止它们悄悄分叉。
+`NS = 'reasoning-summary'` 必须与 `src/index.ts` 的 `SETTINGS_NAMESPACE` 逐字相同：宿主半边用它读配置文档，浏览器半边用它注册 locale namespace、并组成座位 key 的后半段；`PLUGIN_ID = '@zhourenke/dsh-reasoning-summary'` 必须与 `package.json` 的包名相同，组成座位 key 的前半段——`plugins.row.config` 是按 `<包名>#<行 id>` 分派的，所以 `NS` 还必须与 `cordis.patch.yml` 的 `- id:` 一致，三者错一个页面就分派不到。浏览器半边不能 `import` 宿主半边，所以这两个字符串只能各写一份——`test/client.test.mjs` 会把两种拼写和拼出来的 key 都断言一次，防止它们悄悄分叉。
 
 ### 9. 客户端 `inject` 同时列 `remote` 与 `remote.session`
 
-`['slots', 'settingsScope', 'locale', 'remote', 'remote.session']`。客户端 `inject` 是**硬门禁**：漏声明的服务在运行期访问会被直接拒绝（`service "X" is not declared by your plugin`），名字不存在则插件停在 parked 状态并在装载结果里报 `waitingFor`——这与 `package.json` 的 `dsh.client.inject` 写错名字时**静默跳过**完全不同。两个都列有官方先例：同构的 `dsh-client-ui-settings-plugins` 与 `dsh-client-ui-model-selection` 同样同时声明这两个名字。
+`['slots', 'configForms', 'locale', 'remote', 'remote.session']`。`configForms` 是 0.2.0 取代 `settingsScope` 的服务（`get(ns)` / `whileServed([ns], …)`），客户端 `inject` 是**硬门禁**：漏声明的服务在运行期访问会被直接拒绝（`service "X" is not declared by your plugin`），名字不存在则插件停在 parked 状态并在装载结果里报 `waitingFor`——这与 `package.json` 的 `dsh.client.inject` 写错名字时**静默跳过**完全不同。两个都列有官方先例：同构的 `dsh-client-ui-settings-plugins` 与 `dsh-client-ui-model-selection` 同样同时声明这两个名字。
 
 `sessionFace()` 因此保留三条解析路径——`ctx.get('remote.session')`、`ctx.get('remote').session`、`ctx.remote.session`——按"容器查找优先、属性访问兜底"排序。三者都有测试覆盖，**不要当成死代码删除**。
 
 ### 10. 插槽注册用 generator 形式，effect 交还给 `ctx.effect`
 
-注册写成 `ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({…}, Card))`：`slots.inject` 在插槽的注册作用域里跑回调，官方卡片（Bash / AgentLoop / SubagentModelSelection / WebSearch）也都用这个形状，返回值就是 disposer。locale 字典同理走 `ctx.effect(() => locale.register(NS, { zh, en }), …)`，把 disposer 交给 fiber，卸载时自动回收。**凡是返回 disposer 的注册都要交还**，否则重载后会留下重复注册。
+注册写成 `ctx.effect(() => configForms.whileServed([NS], () => ctx.slots.inject('plugins.row.config', () => ctx.slots.register({…}, Card))), …)`：`slots.inject` 在插槽的注册作用域里跑回调，返回值就是 disposer；`whileServed` 让注册只在宿主仍在服务这个 namespace 时存在，否则页面会跟着一个已经不在的条目留在那儿。**注册只声明 `locale: NS`，不要自己 bind 一个翻译器**——渲染器读到 `locale` 后会组合出座位上的 `t`，自己 bind 只会遮蔽同一个 prop（`test/client.test.mjs` 的假 `locale` 服务故意不提供 `bind`，写回 `locale.bind` 会立刻抛错）。locale 字典同理走 `ctx.effect(() => locale.register(NS, { zh, en }), …)`，把 disposer 交给 fiber，卸载时自动回收。**凡是返回 disposer 的注册都要交还**，否则重载后会留下重复注册。
 
-### 11. 配置 schema 用 `transform` 归一化，声明用公开注解保持可移植
+### 11. 配置 schema 的 `models` 必须是 volatile 字段
 
-`configSchema` 在 `z.object({ models })` 外套一层 `z.transform(…, true)`：旧版本写过的无关字段会在读取时被丢掉，而 schema 只保留 `models`（空列表是唯一的关闭状态）。导出的 `Config` 带一句 `as unknown as ReturnType<typeof z.any>`——schemastery 的推断类型会带上内部包类型，直接暴露会让声明文件在别的 pnpm 布局下不可移植。
+`Config` 是 `z.object({ models: z.array(ModelSelectionSchema).default([]).volatile() })`。`.volatile()` 让 loader 每次装载都**重新读**这个字段，而不是把激活时取到的值冻住；交给 `apply` 的形式因此是一个带 `get()` 的盒子，`apply` 里按需读 `config.models.get()`。`src/index.ts` 的 `liveModels()` 同时接受盒子和裸数组，所以这个契约不会因为哪次版本变动就悄悄失效。空列表仍是唯一的关闭状态。
+
+三条纪律：**依赖范围不能低于 `~3.18.4`**——`.volatile()` 在 3.18.2 里不存在（实测 `typeof z.array(item).volatile === 'undefined'`），宿主与兄弟插件都写 `~3.18.4`；**不要为了"顺手丢掉旧字段"在这层套 `z.transform`**，那会把 volatile 标记挪到包装层上，`test/core.test.mjs` 里那条 `Config.toJSON()` 断言（字段自身的 ref 上 `type: 'array'` 且 `meta.volatile: true`）就会失败；**文档里与本插件无关的字段现在会原样留在配置文档里**（实测 `retired: true` 仍然存在），插件只读 `models`，因此无害，但不要再写"读取时会被归一化丢弃"。
 
 ### 12. `\u0000` 是路由键的分隔符，宿主与客户端各有一份
 
@@ -174,11 +178,27 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **用户中断的语义与类型注释给人的印象相反。** `inject()` 的实现是 `send(input, "next-step", false)`（进 `next-step` 队列、不唤醒 driver），`cancel(cause, options)` 只在 `!options.keepInbox` 时才 `inbox.clear()`——**丢弃是不传选项时的默认值**，而用户中断路径显式传 `keepInbox: true`（出处：`@deepseek-ai/dsh-agent-loop`、`@deepseek-ai/dsh-api-session-controller`，见 guide/contracts-with-host.md「inject 的队列在中断后仍活着」）。因此空转放行注入的 `[No tool call received]` 在用户中断后**仍留在队列里**，用户的下一条消息会唤醒模型并在同一个 pre-step 把它送进上下文（紧跟那条消息）——用户只需随口说一句，不必自己复述细节。凡是准备写进 README 的"用户操作后果"，都必须有实测或实现级调用点作证，不能只凭 `.d.ts` 里 `may` 的措辞推断。
 
+### 16. 0.2.0-rc.2 迁移：删掉与官方重复的实现，接上官方范式
+
+**三处硬不兼容**，任何一处都会让插件在运行期直接失效，且都不报"版本不对"这种明确错误：
+
+1. **启动准入被拦**：peer 范围写着 `^0.1.5-rc.1`，宿主的准入闸门用 `semver.satisfies(运行时版本, 范围, { includePrerelease: true })` 判定，`0.2.0-rc.2` 不满足 → 整个 bundle 不加载。实测从 CONFLICT 变为 compatible 就是这个字段的功劳，改完用宿主自己的 `evaluatePluginCompatibility` 复核。
+2. **座位被删**：`settings.plugin.item` 在 0.2.0 已不存在，插件列表也从"设置 → 插件"搬到了左侧边栏「插件」。自造卡片注册到不存在的座位不会报错，只是永远不出现。现在注册 `plugins.row.config`，按 `<包名>#<行 id>` 分派。
+3. **图标被删**：`IconChevronDownOutline14` 在 primitives 里已移除（改名 `IconChevronDownOutlineRegular`），`require` 得到 `undefined`，渲染时才抛 —— 属于"绿灯通过类型检查、重启后才炸"的那一类。删掉自造卡片的外壳后这个图标也不再需要。
+
+**一处类型层硬变更：消息来源不再有万能 `'plugin'`。** 0.2.0 把 `MessageSourceMap` 改成 merge-extensible，**每个生产者在自己模块里声明自己的 kind**，`'plugin'` 这个共用兜底被删除（官方 `dsh-repeat-tool-reminder` 就是自己声明 `'repeat-tool-reminder'` 的样板）。本插件用 `declare module '@deepseek-ai/dsh-llm'` 声明 `'reasoning-summary'`，运行时用 `const MESSAGE_SOURCE = { kind: 'reasoning-summary' }` 拼上各自的 `form`。这不是纯粹的改名——它同时保住了界面标签：chat 的 `contextProducer(source)` 只在少数已知 kind 上特判，其余走 `default: { role: 'inject', label: kind }`，所以这一行仍显示 **「上下文注入 · reasoning-summary」**；若把旧形状原样留着，标签会退化成「… · plugin」。`isProtocolContextMessage` 的判据也随之简化成"`kind` 是本插件的 + 没有 `form`"（kind 已唯一标识生产者，不再需要额外的 `plugin` 字段）。
+
+**删掉的自造轮子（官方已有实现）**：卡片外壳、展开箭头、页脚、保存/放弃按钮与失败提示（官方 `SettingsForm` 全包）；`locale.bind(NS)` + 自铺 `t`（座位按注册里的 `locale` 组合 `t`）；`settingsScope`（换成 `configForms`）。`test/client.test.mjs` 与 `test/runtime.test.mjs` 都断言这些名字**不会再出现**，避免某次重构把它们带回来。
+
+**保留的自造部分与理由**：行内的裸 `<input type="checkbox">` **不是**该删的重复——官方 `Checkbox` 必须自带一个 `label` 字符串，用在这条"勾选框 + 名称 + 路由"的两行行里会套出第二层 label，兄弟插件在同一界面上也是手写 input；路由列表的 `.rs-*` 样式（边框、分组、三列网格）同理，官方没有等价物。`SPIN_NOTICE_TEXT` 与官方 `dsh-repeat-tool-reminder` 的提醒也不重复：后者按连续相同调用的次数（默认 3/5/8）在 `tools/post-execute` 上计数，本插件的提示由"同一次输出两个完整摘要且零工具调用"触发，判据、时机与措辞都不同。
+
+**显示元数据**：插件行现在从包里读 `icon` 与 `locale/*.json`（`meta.title` / `meta.description`），因此这两样必须进 `files` 与 `exports`；实测 `readPluginMeta` 返回两种语言的 title/description 与一个 `data:image/svg+xml;base64,…` 图标。缺 description 时列表会静默退回包名，所以这两件事要一起改。
+
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
 - **`runtime.test.mjs`**：用模拟 ctx 调 `apply`，这是唯一能覆盖事件注册路径的办法。重点是**时序**——relay 必须等所有根工具调用的 durable `tool/result` 提交后才进 inbox；`session/event` 在 `Session.append` 的发布边界内触发，所以改写 inbox 要放进 `queueMicrotask`，否则会撞上 append 自身。另有跨路由可见性、A/B/C/D 序列、设置禁用与重新启用、已准入步骤中途切换后仍跑完、同 session 标题/异信号辅助流隔离、工具结果去重、失败步骤隐藏文本但不建 relay、`prepared-call` 防御性回退；另有三个用例覆盖疑似空转放行：两个完整摘要且零工具调用时放行并注入插件提示（断言注入文本不含模型自己的摘要）、带真实工具调用的步骤不触发、单个摘要不触发。
-- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次卡片元素。文件头把实测到的宿主契约写进注释与桩里（`settings.plugin.item` 是不向卡片传 props 的 keyed 插槽、`settingsScope.bind({ namespace })` 的返回面与快照状态、`status !== 'ready'` 时卡片不渲染）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（guide/verification-method.md「验证本身也会骗你」）。
+- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次两种视图。文件头把实测到的宿主契约写进注释与桩里（`plugins.row.config` 按 `<包名>#<行 id>` 分派、owner props 是 `{ view, form? }`、`configForms.whileServed` 限定注册存活、`mutate(ops, revision)` 返回是否被接受、`SettingsForm` 的 `labels`/`state`/`onSave`/`onDiscard` 形状）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（guide/verification-method.md「验证本身也会骗你」）。桩里的假 `locale` 服务**故意不提供 `bind`**，这样"自己 bind 一个翻译器"会立刻抛错而不是静默遮蔽座位组合出来的 `t`。
 - **跨插件契约**：用**真实的** `dsh-repeat-tool-reminder` 代码验证"注入的消息不会重置它的重复计数"（该守卫只注册两个 handler、不依赖其它服务，所以能用两行 `ctx.on` 装进同一进程），并配一条**反向对照**——同样大小的 pre-step 批次里换成 `source.kind === 'user'` 的消息时链确实会被清除。没有这条对照，主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的**唯一**原因：本包从不 import 它，只有测试加载它，请勿当成未使用的残留删除。
 - **检查器必须先验红**：断言里凡是出现"用正则/转义去匹配常量"的写法，都要先拿一个必然含元字符的样本确认它真的会失败。本项目就抓到过一条：`new RegExp(TEXT.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&'))` 的字符类提前闭合，实测一个字符都不转义，只因为常量里唯一的元字符是 `.`（不转义也能以通配符匹配自己）才一直通过。现在改用 `includes`。
 
@@ -200,7 +220,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 - **`lib/` 的四个产物必须与 `src/` 同一次提交。** `dsh plugin add github:...` 只接收 git 跟踪的文件，本仓库不在安装时构建，所以产物不同步会让 GitHub 安装静默运行旧代码。只提交 `.js` 而漏掉 `lib/types/` 会造成「装得上但没有类型声明」的半发布状态。
 - **不要添加 `prepare` 脚本。** git 托管的包会在安装时执行它，而 pnpm 默认拦截依赖的构建脚本，这会让 `dsh plugin add` 直接失败，直到用户手动在 profile 的 `pnpm-workspace.yaml` 中放行。
-- **`files` 只列不会被自动包含的产物。** 当前为 `lib/index.js`、`lib/client.js`、`lib/types/**/*.d.ts`、`cordis.patch.yml`。`package.json` / `README*` / `LICEN[CS]E*` 以及 `main` 指向的文件无论如何都会装上，列了是空操作；而 `types` 与 `exports` 的目标**不在**自动包含集里，`.d.ts` 一旦漏出 `files` 就会被静默丢弃。`DEVELOPMENT.md` 同样不在自动包含集里（`README*` 不等于所有 `.md`），所以它不会进入安装载荷。
+- **`files` 只列不会被自动包含的产物。** 当前为 `lib/index.js`、`lib/client.js`、`lib/types/**/*.d.ts`、`cordis.patch.yml`、`icon.svg`、`locale/*.json`。`package.json` / `README*` / `LICEN[CS]E*` 以及 `main` 指向的文件无论如何都会装上，列了是空操作；而 `types` 与 `exports` 的目标**不在**自动包含集里，`.d.ts` 一旦漏出 `files` 就会被静默丢弃；`icon` 与 `locale/*.json` 是宿主读显示元数据的入口，漏掉只会让插件行退回包名，不会报错，所以更要靠这份清单兜住。`DEVELOPMENT.md` 同样不在自动包含集里（`README*` 不等于所有 `.md`），所以它不会进入安装载荷。
 - 新增产物（第二入口、运行时读取的数据文件）时，必须同步放宽 `files`，并用 `pnpm pack --dry-run` 核对真实载荷。
 
 ## 运行时依赖（与 DSH 版本匹配）
@@ -209,17 +229,18 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 | 包 | 版本 | 用途 |
 |---|---|---|
-| `@deepseek-ai/cordis` | `^4.0.2` | 插件框架（走自己的版本线） |
-| `@deepseek-ai/dsh-agent` | `^0.1.5-rc.1` | `Agent`、`agent/pre-step` 等事件、`steer()` |
-| `@deepseek-ai/dsh-llm` | `^0.1.5-rc.1` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage` |
-| `@deepseek-ai/dsh-settings` | `^0.1.5-rc.1` | 设置注册与 `Context` 类型增强 |
-| `@deepseek-ai/dsh-system-prompt` | `^0.1.5-rc.1` | runtime-context 槽位注册与 `system-prompt/assemble` |
-| `@deepseek-ai/dsh-tools` | `^0.1.5-rc.1` | `tools/result` 事件 |
-| `@deepseek-ai/schemastery` | `^3.18.2` | 配置校验，**唯一真实的 `dependencies`** |
+| `@deepseek-ai/cordis` | `^4.0.4` | 插件框架、`Volatile` 类型（走自己的版本线） |
+| `@deepseek-ai/dsh-agent` | `^0.2.0-rc.2` | `Agent`、`agent/pre-step` 等事件、`steer()` |
+| `@deepseek-ai/dsh-llm` | `^0.2.0-rc.2` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage`、`MessageSourceMap`（本插件往它上面合并自己的 kind） |
+| `@deepseek-ai/dsh-system-prompt` | `^0.2.0-rc.2` | `system-prompt/assemble` 里取最终 route |
+| `@deepseek-ai/dsh-tools` | `^0.2.0-rc.2` | `tools/result` 事件 |
+| `@deepseek-ai/schemastery` | `~3.18.4` | 配置校验，**唯一真实的 `dependencies`**；用 `~` 是硬要求，`.volatile()` 在 3.18.2 里不存在 |
 
-`devDependencies` 里的宿主包**钉死到精确版本**（`4.0.2` / `0.1.5-rc.1`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试。`@deepseek-ai/dsh-client-ui-primitives`（浏览器半边的 `IconChevronDownOutline14` 与 `Tag`）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
+`dsh-settings` 已从 peer 与 devDeps 一起移除：配置不再经服务，宿主也不再需要我们声明它的类型增强。
 
-三个 `import type {} from '@deepseek-ai/dsh-…'` 是**类型增强导入**，只在类型层存在：这些包把各自的服务与事件并进 Cordis 的 `Context`/`Events` 接口，不加载声明文件就没有 `ctx.settings`、`ctx.systemPrompt`、`ctx.tools` 与订阅事件名的类型。`import type {}` 在运行时被完全擦除，因此不会拉进宿主包的私有副本，也不会被 `noUnusedLocals` 报为未使用。
+`devDependencies` 里的宿主包**钉死到精确版本**（`4.0.4` / `0.2.0-rc.2`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试。`@deepseek-ai/dsh-client-ui-primitives`（浏览器半边现在只取它的 `SettingsForm`）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
+
+`import type {} from '@deepseek-ai/dsh-…'` 是**类型增强导入**，只在类型层存在：这些包把各自的事件并进 Cordis 的 `Events` 接口，不加载声明文件就没有订阅事件名的类型。当前 `dsh-agent` 与 `dsh-llm` 是真的在导入类型（`Agent`、`PreStepDecision`、`StreamChunk`、`ConversationMessage`、`ContextFormed`），**只有 `dsh-system-prompt` 与 `dsh-tools` 是纯增强**——`system-prompt/assemble` 只由 `dsh-system-prompt` 声明，它若只作为 `dsh-agent` 的传递依赖出现就属于巧合而非依赖。`import type {}` 在运行时被完全擦除，因此不会拉进宿主包的私有副本，也不会被 `noUnusedLocals` 报为未使用；反过来，这些行看起来"没用到"也不要删。
 
 DSH 升级后按 `PLUGIN_RELEASE_GUIDE.md`「DSH 升级后的复核」重新核对事件名、宿主符号与 peer 范围。
 

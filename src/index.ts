@@ -8,30 +8,54 @@
  * contexts so a model switch preserves the full action trail.
  */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import type { StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContextFormed, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-// Type-only augmentation imports. Each of these packages merges its service and
-// events into the Cordis `Context`/`Events` interfaces, so the plugin must load
-// the declarations to keep `ctx.settings`, `ctx.tools`, and the subscribed event
-// names typed. `system-prompt/assemble` is declared only by dsh-system-prompt,
-// and it would otherwise arrive solely as a side effect of dsh-agent importing
-// `AssembleContext` from it — a cross-package coincidence, not a dependency.
-// `import type {}` is erased at runtime and therefore never pulls a private copy
-// of a host package.
-import type {} from '@deepseek-ai/dsh-settings'
+// Type-only augmentation imports. Each of these packages merges its events into
+// the Cordis `Events` interface, so the plugin must load the declarations to
+// keep the subscribed event names typed. `system-prompt/assemble` is declared
+// only by dsh-system-prompt, and it would otherwise arrive solely as a side
+// effect of dsh-agent importing `AssembleContext` from it — a cross-package
+// coincidence, not a dependency. `import type {}` is erased at runtime and
+// therefore never pulls a private copy of a host package. dsh-settings is
+// deliberately absent: configuration is the loader's (`apply(ctx, config)`), so
+// this half no longer reads `ctx.settings` at all.
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 
 export const name = 'reasoning-summary'
+
 /**
- * Settings namespace owned by this plugin. DSH validates the plain lowercase
- * form against `/^[a-z][a-z0-9-]*$/`, which this literal satisfies, so no
- * branding helper is involved: `settingsNamespace()` was removed from
- * `@deepseek-ai/dsh-settings` after 0.1.1-rc.2 and importing it would make the
- * plugin depend on a private copy of the host package.
+ * Declare this producer's own message source. DSH has no shared catch-all
+ * `plugin` kind: `MessageSourceMap` is merge-extensible and every producer
+ * declares its own term in its own module, which is also what makes
+ * `source.kind` a reliable statement of *who wrote this*. `ContextFormed` mixes
+ * in the optional `form` vocabulary, so the relay and notice forms below stay
+ * type-checked against their required fields.
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'reasoning-summary': {
+      kind: 'reasoning-summary'
+    } & ContextFormed
+  }
+}
+
+/**
+ * The stamp on every message this plugin writes. `kind` alone identifies the
+ * producer, so no separate plugin-name field is carried. The context form is
+ * added per message: relays and notices declare `form`, the one-time protocol
+ * context declares none.
+ */
+const MESSAGE_SOURCE = { kind: 'reasoning-summary' } as const
+/**
+ * The row's configuration namespace, and one of the three consumers of the same
+ * id: the profile patch entry's `id`, the namespace the client reads through
+ * `ctx.configForms`, and the `<row id>` half of the `plugins.row.config` key.
+ * It must match the `id` in `cordis.patch.yml` character for character; a
+ * mismatch leaves the page's form permanently absent, with only a warning.
  */
 export const SETTINGS_NAMESPACE = 'reasoning-summary'
 
@@ -45,27 +69,34 @@ export interface ReasoningSummaryConfig {
   models: ModelSelection[]
 }
 
+/**
+ * The profile entry's configuration as the loader hands it over: `models` is
+ * volatile, so it arrives as a box whose `get()` answers the current value
+ * rather than the array frozen at activation.
+ */
+export interface PluginConfig {
+  models: Volatile<ModelSelection[]>
+}
+
 const ModelSelectionSchema = z.object({
   provider: z.string().min(1).required(),
   model: z.string().min(1).required(),
 })
 
 /**
- * Keep the settings namespace limited to model routes. The transform also
- * normalizes settings written by older versions by dropping removed fields.
+ * The row's configuration, limited to model routes. `models` carries the
+ * volatile marker, and that marker is what keeps the value live for the running
+ * plugin. It lands on the field's own ref (`meta.volatile`), so the schema has
+ * to stay a plain object: wrapping it in `z.transform` or `.default()` moves the
+ * marker onto the wrapper and the loader would then freeze the value at apply
+ * time, leaving a saved setting invisible until the next restart.
  */
-const configSchema = z.transform(
-  z.object({
-    models: z.array(ModelSelectionSchema).default([]),
-  }),
-  (value) => ({ models: value.models }),
-  true,
-).default({ models: [] })
-
 // The schemastery implementation carries internal package types in its
 // inferred generic; this public annotation keeps generated declarations
 // portable for consumers using a different pnpm layout.
-export const Config = configSchema as unknown as ReturnType<typeof z.any>
+export const Config = z.object({
+  models: z.array(ModelSelectionSchema).default([]).volatile(),
+}) as unknown as ReturnType<typeof z.any>
 
 const MISSING_TEXT = 'Missing action summary: no <summary> tag was received in visible text — reasoning/thinking content is never read, and text outside the tag is discarded. Before your next tool call, emit the summary as visible assistant text in a literal <summary>...</summary> tag.'
 const PARTIAL_TEXT = 'Summary incomplete: the response ended before the closing tag; only a fully closed tag counts as a summary.'
@@ -220,9 +251,24 @@ function routeFromValue(value: unknown): string | undefined {
   return routeKey(candidate.provider, candidate.model)
 }
 
-function selectedRoutes(config: ReasoningSummaryConfig | undefined): ReadonlySet<string> {
+/**
+ * Read a configuration field the loader may hand over live. A `volatile` field
+ * arrives as a box whose `get()` answers the current value; a field the schema
+ * left non-volatile arrives as the plain value. Both shapes are accepted so the
+ * admission path never depends on which of the two it was given.
+ */
+function liveModels(config: { models?: unknown } | undefined): readonly unknown[] {
+  const field = config?.models
+  if (field === null || typeof field !== 'object') return []
+  const boxed = field as { get?: unknown }
+  const value = typeof boxed.get === 'function' ? (boxed.get as () => unknown).call(field) : field
+  return Array.isArray(value) ? value : []
+}
+
+function selectedRoutes(config: { models?: unknown } | undefined): ReadonlySet<string> {
   const set = new Set<string>()
-  for (const entry of config?.models ?? []) {
+  for (const raw of liveModels(config)) {
+    const entry = raw as ModelSelection | undefined
     if (entry && typeof entry.provider === 'string' && typeof entry.model === 'string' && entry.provider && entry.model) {
       set.add(routeKey(entry.provider, entry.model))
     }
@@ -487,8 +533,7 @@ function relayMessage(info: SummaryInfo): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: `${header}\n${info.content}` }],
     source: {
-      kind: 'plugin',
-      plugin: name,
+      ...MESSAGE_SOURCE,
       form: 'relay',
     },
   })
@@ -573,8 +618,7 @@ function makeReasoningContinuation(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: REASONING_CONTINUATION_TEXT }],
     source: {
-      kind: 'plugin',
-      plugin: name,
+      ...MESSAGE_SOURCE,
       form: 'notice',
       summary: 'Continue after a reasoning-only response.',
     },
@@ -585,8 +629,7 @@ function makeSpinNotice(): UserMessage {
   return createUserMessage({
     content: [{ type: 'text', text: SPIN_NOTICE_TEXT }],
     source: {
-      kind: 'plugin',
-      plugin: name,
+      ...MESSAGE_SOURCE,
       form: 'notice',
       summary: 'Two action summaries without a tool call.',
     },
@@ -945,10 +988,11 @@ When a step calls no tools, emit no tag: give one complete user-facing answer in
 // `tools/result` does not require those packages' services in `inject` — the
 // official `dsh-repeat-tool-reminder` declares no host inject at all while
 // listening on the same stream — so `llm` and `tools` are deliberately absent.
-// The runtime test harness provides exactly these two services, so a
-// reintroduced `ctx.llm`/`ctx.tools` read fails there instead of silently
-// widening the declaration.
-export const inject = ['agents', 'settings']
+// `settings` is absent too: configuration reaches the plugin through the
+// loader (`apply(ctx, config)`), not through a service lookup. The runtime test
+// harness provides exactly these services, so a reintroduced read of anything
+// else fails there instead of silently widening the declaration.
+export const inject = ['agents']
 
 function protocolContextMessage(): UserMessage {
   return createUserMessage({
@@ -956,20 +1000,20 @@ function protocolContextMessage(): UserMessage {
     // No context form is intentional: this is an ordinary plugin user message,
     // not a durable relay, notice, or snapshot-projection message. The Agent Loop
     // persists the returned decision message in its normal user-message history.
-    source: { kind: 'plugin', plugin: name },
+    source: { ...MESSAGE_SOURCE },
   })
 }
 
 function isProtocolContextMessage(message: unknown): boolean {
   const candidate = message as {
     content?: readonly { type?: unknown; text?: unknown }[]
-    source?: { kind?: unknown; plugin?: unknown; form?: unknown }
+    source?: { kind?: unknown; form?: unknown }
   } | null | undefined
-  // Relays and notices carry a form; this plugin's only form-less user message
-  // is the protocol context. Use its durable shape so a reactivated plugin also
-  // recognizes a context written by an earlier prompt revision.
-  return candidate?.source?.kind === 'plugin'
-    && candidate.source.plugin === name
+  // `kind` identifies the producer on its own, so the only further test is the
+  // absent form: relays and notices declare one, and the protocol context is
+  // this plugin's only form-less user message. The durable shape is what makes a
+  // reactivated plugin recognize a context written by an earlier prompt revision.
+  return candidate?.source?.kind === MESSAGE_SOURCE.kind
     && candidate.source.form === undefined
     && candidate.content?.length === 1
     && candidate.content[0]?.type === 'text'
@@ -985,12 +1029,14 @@ function hasDurableProtocolContext(session: unknown): boolean {
   return hasProtocolContext(candidate?.deriveMessages?.())
 }
 
-export function apply(ctx: Context): void {
-  const settings = ctx.settings
+export function apply(ctx: Context, config: PluginConfig): void {
   const agents = ctx.agents
-  // Empty until the settings service answers; a registration failure disables
-  // the feature outright, so no fallback value is ever read.
-  let selected: ReadonlySet<string> = new Set<string>()
+  // Configuration belongs to the loader and is read at the moment it is needed:
+  // `models` is a volatile field, so `config.models.get()` answers the current
+  // value and a save becomes visible to the next step without any subscription
+  // and without a restart. Reading it here rather than caching it in a `let` is
+  // the whole point of the marker.
+  const selection = (): ReadonlySet<string> => selectedRoutes(config)
   // The selected route is supplied by DSH's model-selection layer during prompt
   // assembly. Keep only that per-agent admission snapshot; Agent.options is the
   // fallback for callers that invoke pre-step without a preceding assembly.
@@ -1008,26 +1054,13 @@ export function apply(ctx: Context): void {
   const currentRoute = (agent: Agent): string => routeKey(agent.options.provider, agent.options.model)
   const on = ctx.on.bind(ctx)
 
-  try {
-    const scope = settings.register(SETTINGS_NAMESPACE, Config)
-    selected = selectedRoutes(scope.get() as ReasoningSummaryConfig)
-    scope.watch((next) => {
-      // Settings affect admission of the next step only. An already-admitted
-      // enabled step keeps its stream and durable summary intact.
-      selected = selectedRoutes(next as ReasoningSummaryConfig)
-    })
-  } catch (error) {
-    ctx.logger?.warn(`reasoning-summary: settings registration failed; feature disabled: ${String(error)}`)
-    return
-  }
-
   // Model selection is still resolved during prompt assembly, but the protocol
   // text itself is added at most once per Session by the ordinary pre-step path.
   on('system-prompt/assemble', async (_assembly: any, assemblyContext: any, next: () => Promise<any>) => {
     const result = await next()
     const agent = assemblyContext?.agent as Agent | undefined
     const route = routeFromValue(result?.variables) ?? (agent === undefined ? undefined : routeKey(agent.options.provider, agent.options.model))
-    const enabled = route !== undefined && selected.has(route)
+    const enabled = route !== undefined && selection().has(route)
     const runtime = agent?.session === undefined ? undefined : runtimeStateFor(agent)
     const warmup = enabled && runtime !== undefined ? needsWarmup(runtime, route) : false
     if (agent !== undefined && route !== undefined) {
@@ -1094,7 +1127,7 @@ export function apply(ctx: Context): void {
     const admission = admissionSnapshots.get(payload.agent)
     admissionSnapshots.delete(payload.agent)
     const route = admission?.route ?? currentRoute(agent)
-    const enabled = admission?.enabled ?? selected.has(route)
+    const enabled = admission?.enabled ?? selection().has(route)
     const runtime = runtimeStateFor(agent)
     const warmup = admission?.warmup ?? (enabled && needsWarmup(runtime, route))
     const previousState = states.get(payload.agent)

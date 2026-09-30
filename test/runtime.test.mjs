@@ -35,22 +35,18 @@ function makeHarness(config) {
   const steered = []
   const agentById = new Map()
   let currentConfig = config
-  let settingsWatcher
   let syntheticWarmupId = 0
-  const scope = {
-    get: () => currentConfig,
-    watch: (listener) => {
-      settingsWatcher = listener
-      return () => { if (settingsWatcher === listener) settingsWatcher = undefined }
-    },
-  }
+  // The loader hands `apply` a box per volatile field instead of the document
+  // value frozen at activation: `get()` answers whatever is current. That is
+  // exactly what makes a saved setting reach the next step with no reload, so
+  // the harness models it rather than passing a plain array.
+  const modelsBox = { get: () => currentConfig.models }
   const ctx = {
-    settings: { register: () => scope },
     agents: { get: (id) => agentById.get(id) },
     logger: { warn: () => {} },
     on: (name, listener) => { listeners.set(name, listener); return () => {} },
   }
-  apply(ctx)
+  apply(ctx, { models: modelsBox })
 
   function createTestSession(id, existingRaw = Session.create(id)) {
     const raw = existingRaw
@@ -138,8 +134,9 @@ function makeHarness(config) {
     autoPrime,
     routeIsSelected,
     updateSettings(next) {
+      // Rewriting the box's source is the whole write path: no watcher exists to
+      // notify, because the plugin re-reads the box whenever it needs the value.
       currentConfig = next
-      settingsWatcher?.(next)
     },
   }
 }
@@ -297,8 +294,7 @@ function appendDecisionMessages(agent, decision) {
 function isProtocolMessage(message) {
   // The protocol context is the plugin's only form-less message: every relay and
   // notice declares a `form`, so this identifies it without restating the copy.
-  return message.source?.kind === 'plugin'
-    && message.source.plugin === 'reasoning-summary'
+  return message.source?.kind === 'reasoning-summary'
     && message.source.form === undefined
 }
 
@@ -657,7 +653,7 @@ test('a step that already carries the protocol context is not injected a second 
   // recognition is by message shape, not by copy.
   const seeded = createUserMessage({
     content: [{ type: 'text', text: 'protocol context admitted by another writer' }],
-    source: { kind: 'plugin', plugin: 'reasoning-summary' },
+    source: { kind: 'reasoning-summary' },
   })
   await assembleWithRoute(harness, agent, route.provider, route.model)
   const inner = { kind: 'enter', messages: [seeded] }
@@ -705,11 +701,11 @@ test('final assembled variables choose new-summary behavior without hiding exist
   })
   const agent = makeAgent(harness)
   const stale = appendUserMessage(agent, 'A action summary stays available to every route', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
     provider: 'cotton-codex', model: 'gpt-5.6-luna',
   })
   const external = appendUserMessage(agent, 'context from another plugin', {
-    kind: 'plugin', plugin: 'dsh-openwolf', form: 'context',
+    kind: 'dsh-openwolf', form: 'notice', summary: 'external plugin context',
   })
   const preStep = harness.listeners.get('agent/pre-step')
 
@@ -750,17 +746,17 @@ test('an unselected route keeps every existing summary but does not process new 
   agent.options.model = 'deepseek-v4-flash'
   const staleRoute = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const legacyRelay = appendUserMessage(agent, '[Reasoning summary history]\nlegacy summary', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
   })
   const taggedRelay = appendUserMessage(agent, '[Reasoning summary history]\nA summary', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay', ...staleRoute,
+    kind: 'reasoning-summary', form: 'relay', ...staleRoute,
   })
   const continuation = appendUserMessage(agent, '[Reasoning summary continuation]\ncontinue prior work', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'notice',
+    kind: 'reasoning-summary', form: 'notice',
     summary: 'Continue after a reasoning-only response.', ...staleRoute,
   })
   const external = appendUserMessage(agent, 'context from another plugin', {
-    kind: 'plugin', plugin: 'dsh-openwolf', form: 'context',
+    kind: 'dsh-openwolf', form: 'notice', summary: 'external plugin context',
   })
   const preStep = harness.listeners.get('agent/pre-step')
   await preStep({ agent, turn: 9, step: 1, messages: [] }, async () => ({ kind: 'enter', messages: [] }))
@@ -821,14 +817,14 @@ test('every route sees the complete existing relay history', async () => {
   })
   const agent = makeAgent(harness)
   const legacyRelay = appendUserMessage(agent, 'legacy relay remains durable history', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
   })
   const otherRouteRelay = appendUserMessage(agent, 'relay created by another route remains visible', {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
     provider: 'bailian', model: 'deepseek-v4-flash',
   })
   const other = appendUserMessage(agent, 'other plugin context remains', {
-    kind: 'plugin', plugin: 'dsh-openwolf', form: 'context',
+    kind: 'dsh-openwolf', form: 'notice', summary: 'external plugin context',
   })
   const preStep = harness.listeners.get('agent/pre-step')
   await preStep({ agent, turn: 10, step: 1, messages: [] }, async () => ({ kind: 'enter', messages: [] }))
@@ -905,7 +901,7 @@ test('an admitted A tool step persists its summary after switching to disabled B
   assert.equal(relays.length, 1)
   assert.match(relays[0].content[0].text, /A prepared the tool before the route switch/)
   assert.deepEqual(relays[0].source, {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
   })
   await admitRoute(harness, agent, { ...B, turn: 31, step: 1 })
   assert.equal(relayMessages(agent.session).length, 1)
@@ -1208,10 +1204,10 @@ test('a reasoning-only first step steers a bounded internal continuation', async
   assert.equal(harness.steered.length, 1)
   const continuation = harness.steered[0]
   assert.equal(continuation.role, 'user')
-  // 'plugin', never 'user' — a user-sourced message would clear
+  // A producer-declared kind, never 'user' — a user-sourced message would clear
   // dsh-repeat-tool-reminder's repeat chain; see the note on `relay.source.kind`
   // later in this file.
-  assert.equal(continuation.source.kind, 'plugin')
+  assert.equal(continuation.source.kind, 'reasoning-summary')
   assert.equal(continuation.source.form, 'notice')
   assert.ok(continuation.content[0].text.trim().length > 0)
   assert.match(continuation.content[0].text, /^\[Continue after reasoning-only response\]\n/)
@@ -1258,7 +1254,7 @@ test('an admitted enabled tool step publishes its relay after settings are disab
 
   assert.equal(relayEvents(agent.session).length, 1)
   assert.deepEqual(relayEvents(agent.session)[0].data.source, {
-    kind: 'plugin', plugin: 'reasoning-summary', form: 'relay',
+    kind: 'reasoning-summary', form: 'relay',
   })
 })
 
@@ -1500,31 +1496,46 @@ test('the settings card reads the Host catalog through the remote session namesp
     assert.match(source, /modelCatalog\(\)/)
     assert.match(source, /'remote\.session'/)
     // Activation must gate on the namespace service, not on a cached property.
-    assert.match(source, /inject: \['slots', 'settingsScope', 'locale', 'remote', 'remote\.session'\]/)
+    assert.match(source, /inject: \['slots', 'configForms', 'locale', 'remote', 'remote\.session'\]/)
   }
 })
 
-test('the settings card follows official plugin-card chrome and exposes model routes only', () => {
+test('the configuration page is the official settings form and owns only the route list', () => {
   for (const file of ['../src/client.ts', '../lib/client.js']) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8')
-    // Card shell mirrors PluginCard (ui-settings-plugins): hairline border on
-    // the l4 token, 16px radius, open state on bg-layer-2.
-    assert.match(source, /e\('li', \{\s*className: `rs-card/)
-    assert.match(source, /\.rs-card \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\)/)
-    assert.match(source, /\.rs-card \{[^}]*border-radius:\s*16px/)
-    assert.doesNotMatch(source, /\.rs-card \{[^}]*overflow\s*:/)
+    // The frame, the save control and the failure notice belong to the official
+    // settings form. The hand-rolled card shell that 0.1.5 needed — header,
+    // chevron, footer, buttons, failure line — must not come back: it was a
+    // reimplementation of what the primitive already draws, and 0.2.0 replaced
+    // the whole seat it was written for.
+    assert.match(source, /return e\(SettingsForm, \{/)
+    assert.doesNotMatch(source, /rs-card|rs-head\b|rs-chevron|rs-pending|rs-footer|rs-discard|rs-save|rs-failed|rs-readonly/)
+    // 0.2.0-rc.2 renamed this icon; the old name resolves to undefined.
+    assert.doesNotMatch(source, /IconChevronDownOutline14/)
+    // The removed seat, the scope binding it needed, and the shadowing
+    // translator are gone with it.
+    assert.doesNotMatch(source, /settings\.plugin\.item/)
+    assert.doesNotMatch(source, /settingsScope/)
+    assert.doesNotMatch(source, /locale\.bind/)
+    // The seat is the plugin row's configuration page, dispatched by
+    // `<package name>#<row id>`, and it declares the locale the seat translator
+    // is composed from.
+    assert.match(source, /'plugins\.row\.config'/)
+    assert.match(source, /configForms\.whileServed/)
+    assert.match(source, /locale: NS/)
+
+    // Route-list styling still follows the sibling cards on this surface.
+    assert.match(source, /\.rs-model-label \{[^}]*font-weight:\s*500;\s*line-height:\s*1\.5/)
     assert.doesNotMatch(source, /border-left:\s*3px/)
     assert.doesNotMatch(source, /['"]⌄['"]/)
-    assert.match(source, /IconChevronDownOutline14/)
     assert.doesNotMatch(source, /rs-select(?:-chevron)?/)
     assert.doesNotMatch(source, /e\('select'/)
-    assert.match(source, /\.rs-model-label \{[^}]*font-weight:\s*500;\s*line-height:\s*1\.5/)
-    // Model list mirrors SubagentModelSelectionCard: bordered fieldset with
-    // provider groups and a three-column row (checkbox / name+route / action).
+    // Model list mirrors the sibling card: bordered fieldset with provider
+    // groups and a three-column row (checkbox / name+route / action).
     assert.match(source, /\.rs-models \{[^}]*border:\s*\.5px solid var\(--dsw-alias-border-l4\);[^}]*border-radius:\s*8px;[^}]*max-height:\s*280px/)
     assert.match(source, /\.rs-model \{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) auto;[^}]*padding:\s*6px/)
     assert.match(source, /\.rs-model-group \+ \.rs-model-group \{[^}]*border-top:\s*\.5px solid var\(--dsw-alias-border-l3\)/)
-    // Unavailable rows mirror the Subagent card: a plain checkbox row with the
+    // Unavailable rows mirror the sibling card: a plain checkbox row with the
     // unavailable label, no trash/delete control of any kind.
     assert.match(source, /\.rs-unavailable \{[^}]*color:\s*var\(--dsw-alias-label-tertiary\);[^}]*font-size:\s*11px/)
     assert.doesNotMatch(source, /IconTrashOutline16/)
@@ -1540,12 +1551,6 @@ test('the settings card follows official plugin-card chrome and exposes model ro
     assert.doesNotMatch(source, /\.rs-refresh/)
     assert.doesNotMatch(source, /cleanup\s*:\s*['"](?:清理选择|Remove selection)['"]/)
     assert.match(source, /retry\s*:\s*['"](?:重试|Retry)['"]/)
-    assert.match(source, /\.rs-discard:hover:not\(:disabled\) \{[^}]*color:\s*var\(--dsw-alias-label-primary\);[^}]*border-color:\s*var\(--dsw-alias-label-dimmed\)/)
-    assert.doesNotMatch(source, /\.rs-discard:hover:not\(:disabled\) \{[^}]*background\s*:/)
-    assert.match(source, /\.rs-save \{[^}]*background:\s*var\(--dsw-alias-label-primary\);[^}]*color:\s*var\(--dsw-alias-bg-layer-3\)/)
-    assert.doesNotMatch(source, /\.rs-save:hover\s*\{/)
-    assert.match(source, /\.rs-discard:disabled, \.rs-save:disabled \{[^}]*opacity:\s*\.4;[^}]*cursor:\s*default/)
-    assert.match(source, /\.rs-discard:focus-visible, \.rs-save:focus-visible \{[^}]*outline:\s*2px solid var\(--dsw-alias-brand-primary\);[^}]*outline-offset:\s*1px/)
     assert.match(source, /模型目录中不可用且已启用的条目仍会保留显示。/)
     assert.match(source, /Enabled entries that are unavailable in the model catalog remain visible\./)
   }
@@ -1814,18 +1819,18 @@ test('selected tool steps remove the canonical tag and inject one relay only aft
   assert.equal(harness.injected.length, 1)
   const relay = harness.injected[0]
   assert.equal(relay.role, 'user')
-  // `source.kind` must stay 'plugin': this is a cross-plugin contract, not
-  // cosmetics. dsh-repeat-tool-reminder clears its per-agent repeat chain on
-  // `agent/pre-step` when any inbox message satisfies
-  // `message.source.kind === 'user'` (dsh-repeat-tool-reminder/lib/index.js:1510),
+  // `source.kind` must stay this producer's own term — never 'user': that is a
+  // cross-plugin contract, not cosmetics. dsh-repeat-tool-reminder clears its
+  // per-agent repeat chain on `agent/pre-step` when any inbox message satisfies
+  // `message.source.kind === 'user'` (dsh-repeat-tool-reminder/lib/index.js:1592),
   // so a relay or notice claiming to be a user message would silently reset the
-  // 3/5/8-repeat reminders for the rest of the session. The `role: 'user'` above
-  // is the LLM role and is unrelated — `createUserMessage` spreads the caller's
-  // input and forces only `role` (dsh-llm/lib/types/message.js:45), so the
-  // source passed here survives verbatim. See the notice assertion earlier in
-  // this file for the same invariant.
-  assert.equal(relay.source.kind, 'plugin')
-  assert.equal(relay.source.plugin, 'reasoning-summary')
+  // 3/5/8-repeat reminders for the rest of the session. DSH no longer has a
+  // shared catch-all `plugin` kind — each producer declares its own term in its
+  // own module — so this one word already names the producer. The `role: 'user'`
+  // above is the LLM role and is unrelated: `createUserMessage` spreads the
+  // caller's input and forces only `role`, so the source passed here survives
+  // verbatim. See the notice assertion earlier in this file for the same invariant.
+  assert.equal(relay.source.kind, 'reasoning-summary')
   assert.equal(relay.source.form, 'relay')
   // The relay carries only the tag content; the natural prose after the tag
   // is suppressed tool-step text and is never merged into the summary.
@@ -2129,12 +2134,13 @@ test('duplicate durable tool results cannot release a second relay', async () =>
 //
 // The guard clears its per-agent chain when the batch handed to `agent/pre-step`
 // contains any message with `source.kind === 'user'`
-// (dsh-repeat-tool-reminder/lib/index.js:1510). Everything this plugin puts in
-// that batch must therefore stay `kind: 'plugin'`, or it would silently reset
-// the 3/5/8-repeat reminders for the rest of the session.
+// (dsh-repeat-tool-reminder/lib/index.js:1592). Everything this plugin puts in
+// that batch must therefore carry a producer kind of its own — `'reasoning-summary'`,
+// never `'user'` — or it would silently reset the 3/5/8-repeat reminders for the
+// rest of the session.
 //
 // These tests run the REAL guard, not a transcription of its rule. It needs only
-// `ctx.on` and its config (dsh-repeat-tool-reminder/lib/index.js:1450-1512), so
+// `ctx.on` and its config (dsh-repeat-tool-reminder/lib/index.js:1532-1592), so
 // a two-line ctx is enough to install it next to this plugin.
 // ---------------------------------------------------------------------------
 
@@ -2215,16 +2221,18 @@ test('the next-step relay keeps the repeat-tool reminder chain alive', async () 
 
   // The next step claims the plugin's relay — this is the batch the guard scans.
   const claimed = await claimIntoPreStep(handlers, agent)
-  const mine = claimed.filter((message) => message.source?.plugin === 'reasoning-summary')
+  const mine = claimed.filter((message) => message.source?.kind === 'reasoning-summary')
   assert.equal(mine.length, 1)
-  assert.equal(mine[0].source.kind, 'plugin')
+  assert.equal(mine[0].source.kind, 'reasoning-summary')
   assert.equal(claimed.some((message) => message.source?.kind === 'user'), false)
 
   // A third identical attempt is still the third in the run, so the guard fires.
   const contexts = await attemptTool(handlers, agent, 'read_file', { path: 'x' })
   assert.equal(contexts.length, 1)
   assert.match(contexts[0].content[0].text, /^You are repeating the exact same tool call/)
-  assert.equal(contexts[0].source.kind, 'plugin')
+  // The guard's reminder carries the guard's own producer kind, which is what
+  // keeps it distinguishable from this plugin's messages in the same batch.
+  assert.equal(contexts[0].source.kind, 'repeat-tool-reminder')
 })
 
 test('control: a user-sourced message in that same batch does reset the chain', async () => {
@@ -2277,7 +2285,7 @@ test('two complete summaries without a tool call release the step and inject the
   // model's unexecuted summaries.
   assert.equal(harness.injected.length, 1)
   const notice = harness.injected[0]
-  assert.equal(notice.source.kind, 'plugin')
+  assert.equal(notice.source.kind, 'reasoning-summary')
   assert.equal(notice.source.form, 'notice')
   assert.match(notice.content[0].text, /^\[No tool call received\]\n/)
   assert.match(notice.content[0].text, /DSH executes tools only when the assistant emits structured DSH tool-call blocks\. Text that imitates a tool invocation is ordinary assistant text and is not executed\./)

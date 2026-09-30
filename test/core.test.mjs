@@ -10,16 +10,29 @@ import {
 } from '../lib/index.js'
 
 test('the default settings leave the feature inactive', () => {
-  assert.deepEqual(Config(), { models: [] })
+  // A volatile field resolves to a live box rather than to an array: `get()` is
+  // the read path, and it answers the current value. Empty is the documented
+  // default, which is what keeps the feature off until a route is chosen.
+  assert.deepEqual(Config().models.get(), [])
 })
 
-test('settings accept exact model routes and normalize removed fields away', () => {
-  assert.deepEqual(Config({
-    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
-    retired: true,
-  }), {
-    models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
-  })
+test('the models field is declared volatile so a save reaches the next step', () => {
+  // The loader re-reads a volatile field on every load instead of freezing the
+  // value captured at activation, and schemastery records the marker on the
+  // field's own ref (measured on 3.18.4 — the API does not exist in 3.18.2, so
+  // the dependency range is load-bearing). This asserts the exact envelope that
+  // a dependency bump could otherwise change silently.
+  const envelope = Config.toJSON()
+  const models = envelope.refs[envelope.refs[envelope.uid].dict.models]
+  assert.equal(models.type, 'array')
+  assert.equal(models.meta.volatile, true)
+})
+
+test('settings accept exact model routes and reject an empty provider', () => {
+  assert.deepEqual(
+    Config({ models: [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }] }).models.get(),
+    [{ provider: 'cotton-codex', model: 'gpt-5.6-luna' }],
+  )
   assert.throws(() => Config({ models: [{ provider: '', model: 'x' }] }))
 })
 

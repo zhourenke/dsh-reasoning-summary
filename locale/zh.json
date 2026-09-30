@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "推理摘要",
+    "description": "在工具调用前要求并转达简洁的动作摘要，只对你选定的 provider/model 路由生效。"
+  }
+}

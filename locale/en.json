@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Reasoning Summary",
+    "description": "Require and relay a concise action summary before each tool call, on the provider/model routes you select."
+  }
+}
