@@ -1,7 +1,7 @@
 {
   "name": "@zhourenke/dsh-reasoning-summary",
   "description": "Require and relay concise action summaries before tool calls in DeepSeek Harness",
-  "version": "0.1.0",
+  "version": "0.2.0-rc2.1",
   "publishConfig": {
     "access": "public"
   },
