@@ -172,7 +172,8 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 
 ## Compatibility
 
-Tested against **DSH v0.1.5-rc.1** (2026-09).
+Tested with v0.2.0-rc.2 (September 2026).
+Tested with v0.2.1-rc.2 (October 2026).
 
 ## License
 

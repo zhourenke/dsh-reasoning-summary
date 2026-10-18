@@ -173,7 +173,8 @@ Read src/index.ts; confirmed the parser location; next update the nearest-pair r
 
 ## 兼容性
 
-在 **DSH v0.2.0-rc.2**（2026-09）下测试通过。
+在 v0.2.0-rc.2（2026-09）下测试通过。
+在 v0.2.1-rc.2（2026-10）下测试通过。
 
 ## 许可证
 

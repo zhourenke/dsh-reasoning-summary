@@ -16,7 +16,7 @@
 | `lib/types/client.d.ts` | 浏览器类型声明，**必须提交** |
 | `icon.svg` | 插件行图标，`package.json` 的 `icon` 指向它，**必须提交** |
 | `locale/zh.json`、`locale/en.json` | 插件行的显示名称与描述（`meta.title` / `meta.description`），**必须提交** |
-| `test/core.test.mjs` | 纯函数与解析器（13 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素、`Config` 的 volatile 声明，以及行 id 在三处拼写的漂移守卫 |
+| `test/core.test.mjs` | 纯函数与解析器（14 项）：`inspectSummary`、`normalizeTextBlocks`、`routeKey`、摘要素、`Config` 的 volatile 声明、行 id 在三处拼写的漂移守卫，以及 peerDependencies 与 README 兼容声明双向一致性守卫 |
 | `test/runtime.test.mjs` | 宿主事件链（63 项）：模拟 ctx 走完整 step 生命周期 |
 | `test/client.test.mjs` | 浏览器半边（20 项）：**真正执行** `lib/client.js` |
 | `tools/inspect-session.mjs` | 开发期工具，**不随包发布**（不在 `files` 里）：直读某个 Session 的持久日志，回答"插件在这个 Session 里到底做了什么" |
@@ -25,7 +25,7 @@
 | `tsconfig.client.json` | 浏览器半边配置（DOM，无 Node 类型） |
 | `pnpm-workspace.yaml` | pnpm 自管的 `minimumReleaseAgeExclude` 允许清单，**一并提交**，不要手改（「供应链策略」） |
 
-上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **96**（13 + 63 + 20），同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
+上表三个测试文件的项数用**逐文件**命令重新产出，例如 `node --test test/core.test.mjs`；三者之和当前为 **97**（14 + 63 + 20），同时也写在 `pnpm test` 输出的 `tests N` 行里。改过测试后请用这两条命令更新数字，不要手改——过期计数比没有计数更糟，它会被当成核对过的结论引用。
 
 ## 本地开发与构建
 
@@ -269,19 +269,25 @@ node tools/inspect-session.mjs <目标> --json   # 机读输出
 | 包 | 版本 | 用途 |
 |---|---|---|
 | `@deepseek-ai/cordis` | `^4.0.4` | 插件框架、`Volatile` 类型（走自己的版本线） |
-| `@deepseek-ai/dsh-agent` | `^0.2.0-rc.2` | `Agent`、`agent/pre-step` 等事件、`steer()` |
-| `@deepseek-ai/dsh-llm` | `^0.2.0-rc.2` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage`、`MessageSourceMap`（本插件往它上面合并自己的 kind） |
-| `@deepseek-ai/dsh-system-prompt` | `^0.2.0-rc.2` | `system-prompt/assemble` 里取最终 route |
-| `@deepseek-ai/dsh-tools` | `^0.2.0-rc.2` | `tools/result` 事件 |
+| `@deepseek-ai/dsh-agent` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `Agent`、`agent/pre-step` 等事件、`steer()` |
+| `@deepseek-ai/dsh-llm` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage`、`MessageSourceMap`（本插件往它上面合并自己的 kind） |
+| `@deepseek-ai/dsh-system-prompt` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `system-prompt/assemble` 里取最终 route |
+| `@deepseek-ai/dsh-tools` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `tools/result` 事件 |
 | `@deepseek-ai/schemastery` | `~3.18.4` | 配置校验，**唯一真实的 `dependencies`**；用 `~` 是硬要求，`.volatile()` 在 3.18.2 里不存在 |
+
+已测试版本：**DSH v0.2.0-rc.2**（2026-09）与 **v0.2.1-rc.2**（2026-10），双轨支持。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
 
 `dsh-settings` 已从 peer 与 devDeps 一起移除：配置不再经服务，宿主也不再需要我们声明它的类型增强。
 
-`devDependencies` 里的宿主包**钉死到精确版本**（`4.0.4` / `0.2.0-rc.2`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试。`@deepseek-ai/dsh-client-ui-primitives`（浏览器半边现在只取它的 `SettingsForm`）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
+`devDependencies` 里的宿主包**钉死到基线精确版本**（`4.0.4` / `0.2.0-rc.2`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试；`0.2.1-rc.2` 的类型校验与端到端在 `_next-compat/` 隔离环境中复核。`@deepseek-ai/dsh-client-ui-primitives`（浏览器半边现在只取它的 `SettingsForm`）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
 
 `import type {} from '@deepseek-ai/dsh-…'` 是**类型增强导入**，只在类型层存在：这些包把各自的事件并进 Cordis 的 `Events` 接口，不加载声明文件就没有订阅事件名的类型。当前 `dsh-agent` 与 `dsh-llm` 是真的在导入类型（`Agent`、`PreStepDecision`、`StreamChunk`、`ConversationMessage`、`ContextFormed`），**只有 `dsh-system-prompt` 与 `dsh-tools` 是纯增强**——`system-prompt/assemble` 只由 `dsh-system-prompt` 声明，它若只作为 `dsh-agent` 的传递依赖出现就属于巧合而非依赖。`import type {}` 在运行时被完全擦除，因此不会拉进宿主包的私有副本，也不会被 `noUnusedLocals` 报为未使用；反过来，这些行看起来"没用到"也不要删。
 
 DSH 升级后按 `PLUGIN_RELEASE_GUIDE.md`「DSH 升级后的复核」重新核对事件名、宿主符号与 peer 范围。
+
+工作区级文档 `PLUGIN_RELEASE_GUIDE.md`（位于仓库外的 `DSH_Workspace/CreatePlugin/`，**不随 git 分发**）收录了更完整的开发、发布与排错经验：构建提交纪律、连接点安装的连带后果、模型文案的落点与取证、`tsc` 拼接缝等。开发时对照查阅。
+
+**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」（双轨支持下仍为 `0.2.0-rc2.1`，窗口上界由 `peerDependencies` 与 README 表达；下次 tuple 迁移至 `0.2.1` 时采用保留点的 `rc.2.N` 形状，如 `0.2.1-rc.2.1`），而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
 
 ## 许可证
 

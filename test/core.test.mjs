@@ -132,3 +132,36 @@ test('a final step does not add a summary when it has no tool call', () => {
   const result = normalizeTextBlocks(['ordinary final answer'], false)
   assert.deepEqual(result, { texts: ['ordinary final answer'] })
 })
+
+test('peerDependencies and README compatibility declarations stay in step across host baselines', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  // All @deepseek-ai/dsh-* peerDependencies must declare the exact same range of host baselines
+  const dshPeers = Object.entries(manifest.peerDependencies ?? {})
+    .filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
+  assert.ok(dshPeers.length > 0, 'must declare dsh-* peerDependencies')
+
+  const expectedRange = dshPeers[0][1]
+  for (const [name, range] of dshPeers) {
+    assert.equal(range, expectedRange, `${name} peer range must match other dsh-* packages`)
+  }
+
+  // Extract version tokens from the peer range, e.g. "^0.2.0-rc.2 || ^0.2.1-rc.2" -> ['0.2.0-rc.2', '0.2.1-rc.2']
+  const peerVersions = expectedRange
+    .split('||')
+    .map((arm) => arm.trim().replace(/^\^/, ''))
+    .sort()
+
+  // Verify README.md compatibility section has exactly one matching line per peer baseline
+  const readmeZh = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+  const zhMatches = [...readmeZh.matchAll(/在 v([0-9a-zA-Z.-]+)（\d{4}-\d{2}）下测试通过。/g)]
+    .map((m) => m[1])
+    .sort()
+  assert.deepEqual(zhMatches, peerVersions, 'README.md compatibility lines must match peerDependencies baselines')
+
+  // Verify README.en.md compatibility section matches as well
+  const readmeEn = readFileSync(new URL('../README.en.md', import.meta.url), 'utf8')
+  const enMatches = [...readmeEn.matchAll(/Tested with v([0-9a-zA-Z.-]+) \([A-Za-z]+ \d{4}\)\./g)]
+    .map((m) => m[1])
+    .sort()
+  assert.deepEqual(enMatches, peerVersions, 'README.en.md compatibility lines must match peerDependencies baselines')
+})
