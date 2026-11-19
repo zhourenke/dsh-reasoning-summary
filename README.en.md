@@ -172,8 +172,7 @@ An admitted step is unaffected by later changes: a model switch or settings chan
 
 ## Compatibility
 
-Tested with v0.2.0-rc.2 (September 2026).
-Tested with v0.2.1-rc.2 (October 2026).
+Tested with v0.2.2-rc.5 (November 2026).
 
 ## License
 

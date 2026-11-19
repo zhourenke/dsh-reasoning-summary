@@ -37,12 +37,15 @@ import { readFileSync } from 'node:fs'
 // 4. `ConfigPageForm.mutate(ops, expectedRevision?)` performs the write and
 //    resolves whether the Host accepted it; a stale revision is refused rather
 //    than overwriting a concurrent write
-//    (dsh-client-ui-primitives/lib/types/settings-form/form-model.d.ts).
+//    (dsh-client-ui-settings/lib/types/client/config-form-types.d.ts).
 //
-// 5. `SettingsForm` owns the frame, the save control and the failure notice, and
-//    takes `{ labels, state, onSave, onDiscard, children }` where `state` is
-//    `{ available, writable, dirty, invalid, saving, failed }`
-//    (dsh-client-ui-primitives/lib/types/settings-form/SettingsForm.d.ts).
+// 5. The page body now draws its own frame. DSH 0.2.2 removed the shared
+//    `SettingsForm` primitive (`@deepseek-ai/dsh-client-ui-primitives` is no
+//    longer a package of the host tree at all), and `plugins.row.config` owners
+//    render the form together with its save control
+//    (dsh-client-ui-plugin-manager/lib/types/client/slot-contract.d.ts: the
+//    `page` view "renders the form with its save control"). The card therefore
+//    owns `div.rs-form` with `div.rs-actions`, and `require` reaches only `react`.
 //
 // NOT modelled here: React's reconciler and hook semantics (the stub keeps
 // per-slot state and replays only the passes a test drives — no scheduling, no
@@ -66,7 +69,7 @@ const PACKAGE_NAME = '@zhourenke/dsh-reasoning-summary'
 const NS = 'reasoning-summary'
 
 /**
- * Build a factory `require` that satisfies the two modules the card imports.
+ * Build a factory `require` that satisfies the one module the card imports.
  * `elements` records every `createElement` call, which is how a test observes
  * what the card would render.
  */
@@ -79,11 +82,6 @@ function makeRequire() {
   // inline, and every pass re-runs them, so a test that renders twice sees the
   // effect fire twice — assert on the settled render, not on the call count.
   const hooks = { slots: [], cursor: 0 }
-  const primitives = {
-    // A distinct identity so a test can prove the page really renders the
-    // official form rather than a hand-rolled frame of its own.
-    SettingsForm: function SettingsForm() {},
-  }
   const require = (id) => {
     requested.push(id)
     if (id === 'react') {
@@ -109,10 +107,33 @@ function makeRequire() {
         },
       }
     }
-    if (id === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error(`unexpected require("${id}")`)
   }
-  return { require, requested, elements, primitives, hooks }
+  return { require, requested, elements, hooks }
+}
+
+/**
+ * The page body's own frame, as the card draws it. `dirty`, `saving`, `failed`
+ * and `readOnly` are read back off the rendered controls rather than off
+ * internal state, so a test proves what the person sees.
+ */
+function frameOf(elements) {
+  const frame = findElement(elements, (el) => el.component === 'div' && el.props?.className === 'rs-form')
+  if (!frame) return undefined
+  const actions = frame.children.find((child) => child?.props?.className === 'rs-actions')
+  const buttons = actions.children.filter((child) => child?.component === 'button')
+  const discard = buttons.find((button) => button.props.className === 'rs-secondary')
+  const save = buttons.find((button) => button.props.className === 'rs-primary')
+  return {
+    frame,
+    actions,
+    discard,
+    save,
+    field: frame.children.find((child) => child?.props?.className === 'rs-field'),
+    dirty: save !== undefined && save.props.disabled === false,
+    failed: actions.children.some((child) => child?.props?.className === 'rs-failure'),
+    readOnly: actions.children.some((child) => child?.props?.className === 'rs-readonly'),
+  }
 }
 
 /** The official translator's own substitution rule, used to compose `kit.t`. */
@@ -253,8 +274,9 @@ test('the factory returns the plugin contract and requests only host modules', (
   const plugin = definition.factory(require)
   assert.equal(typeof plugin.apply, 'function')
   assert.deepEqual(plugin.inject, ['slots', 'configForms', 'locale', 'remote', 'remote.session'])
-  // The primitives module is the only optional import; react is always required.
-  assert.deepEqual(requested.sort(), ['@deepseek-ai/dsh-client-ui-primitives', 'react'])
+  // Only react: the shared settings primitive is gone from the host tree, so
+  // nothing else may be requested.
+  assert.deepEqual(requested.sort(), ['react'])
 })
 
 test('apply claims the plugin row seat while the Host serves the namespace', () => {
@@ -299,12 +321,12 @@ test('the page one-liner renders the description and never reaches the Host', ()
   // for a model catalog.
   assert.equal(state.modelCatalogCalls, 0)
   // It must not build the settings form either.
-  assert.equal(findElement(elements, (el) => el.component === 'form' || el.component?.name === 'SettingsForm'), undefined)
+  assert.equal(frameOf(elements), undefined)
 })
 
-test('the page body renders the official settings form with the Host form value', async () => {
+test('the page body draws its own frame over the Host form value', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
-  const { require, elements, primitives } = makeRequire()
+  const { require, elements } = makeRequire()
   const plugin = definition.factory(require)
   const { ctx, state, form } = makeCtx({ models: [route], withCatalog: true, groups: [
     { id: 'cotton-codex', name: 'Cotton Codex', models: [{ id: 'gpt-5.6-luna', name: 'Luna' }] },
@@ -318,30 +340,21 @@ test('the page body renders the official settings form with the Host form value'
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(state.modelCatalogCalls, 1)
 
-  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
-  assert.ok(settingsForm, 'the page body must be the official SettingsForm')
-  assert.deepEqual(settingsForm.props.labels, {
-    unavailable: t('formUnavailable'),
-    readOnly: t('readOnly'),
-    saveFailed: t('saveFailed'),
-    save: t('save'),
-    saving: t('saving'),
-  })
-  assert.deepEqual(settingsForm.props.state, {
-    available: true,
-    writable: true,
-    dirty: false,
-    invalid: false,
-    saving: false,
-    failed: false,
-  })
-  assert.equal(typeof settingsForm.props.onSave, 'function')
-  assert.equal(typeof settingsForm.props.onDiscard, 'function')
-  // The stub keeps element children beside the props, as React's own element
-  // shape does: the form wraps the route field as its children.
-  assert.ok(settingsForm.children.length > 0, 'the form must wrap the route list')
-  const field = settingsForm.children.find((child) => child?.props?.className === 'rs-field')
-  assert.ok(field, 'the wrapped body must be the route field')
+  assert.equal(card.component, 'div')
+  const frame = frameOf(elements)
+  assert.ok(frame, 'the page body must be the entry\'s own frame')
+  assert.equal(frame.frame.props.className, 'rs-form')
+  // The route field is wrapped by the frame, and the save control is part of
+  // the body now that no shared primitive draws it.
+  assert.ok(frame.field, 'the frame must wrap the route field')
+  assert.equal(frame.discard.children[0], t('discard'))
+  assert.equal(frame.save.children[0], t('save'))
+  // A pristine page has nothing to commit, so both controls start disabled.
+  assert.equal(frame.dirty, false)
+  assert.equal(frame.save.props.disabled, true)
+  assert.equal(frame.discard.props.disabled, true)
+  assert.equal(frame.failed, false)
+  assert.equal(frame.readOnly, false)
 
   // The saved route is listed, checked, and still visible. The stub does not
   // expand nested function components, so the row element is expanded here — the
@@ -366,45 +379,44 @@ test('a page entry mounted without the owner form renders nothing', () => {
   const t = kitFor(state, NS)
   const { card } = render(state, { view: 'page', form: undefined, t })
   assert.equal(card, null)
-  assert.equal(findElement(elements, (el) => el.component === 'form'), undefined)
+  assert.equal(frameOf(elements), undefined)
 })
 
 test('a loading form renders nothing so the unavailable notice cannot flash', () => {
   // `loading` is the config form's initial status while the Host describe read
-  // is in flight (dsh-client-ui-settings/lib/client.js:1118), so rendering the
-  // official notice here would flash "not available" on every row open.
+  // is in flight (dsh-client-ui-settings/lib/types/client/config-form-types.d.ts),
+  // so rendering a notice here would flash "not available" on every row open.
   const form = { state: { status: 'loading', value: undefined, writable: false }, mutate: async () => true }
-  const { require, elements, primitives } = makeRequire()
+  const { require, elements } = makeRequire()
   const plugin = definition.factory(require)
   const { ctx, state } = makeCtx({ form, withCatalog: true })
   plugin.apply(ctx)
 
   const { card } = render(state, { view: 'page', form, t: kitFor(state, NS) })
   assert.equal(card, null)
-  assert.equal(findElement(elements, (el) => el.component === primitives.SettingsForm), undefined)
+  assert.equal(frameOf(elements), undefined)
   // The catalog read is gated on readiness too: a list that cannot be drawn must
   // not cost a Host round trip.
   assert.equal(state.modelCatalogCalls, 0)
 })
 
-test('an unavailable form is handed to the official notice instead of answered here', () => {
+test('an unavailable form draws the notice here, since no primitive owns it', () => {
   // `unavailable` is held while the Host serves no document for the namespace
-  // (dsh-client-ui-settings/lib/client.js:1227-1231), which the official form
-  // answers with its own `available: false` branch.
+  // (dsh-client-ui-settings/lib/types/client/config-form-types.d.ts). With the
+  // shared primitive gone, this entry answers that state itself.
   const form = { state: { status: 'unavailable', value: undefined, writable: false }, mutate: async () => true }
-  const { require, elements, primitives } = makeRequire()
+  const { require, elements } = makeRequire()
   const plugin = definition.factory(require)
   const { ctx, state } = makeCtx({ form, withCatalog: true })
   plugin.apply(ctx)
 
   const t = kitFor(state, NS)
-  render(state, { view: 'page', form, t })
-  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
-  assert.ok(settingsForm, 'the official form owns the unavailable presentation')
-  assert.equal(settingsForm.props.state.available, false)
-  assert.equal(settingsForm.props.labels.unavailable, t('formUnavailable'))
-  // The primitive draws nothing but its notice in this state, children aside.
-  assert.ok(settingsForm.children.length > 0)
+  const { card } = render(state, { view: 'page', form, t })
+  assert.equal(card.component, 'p')
+  assert.equal(card.props.role, 'status')
+  assert.equal(card.props.className, 'rs-notice')
+  assert.equal(card.children[0], t('formUnavailable'))
+  assert.equal(frameOf(elements), undefined)
   assert.equal(state.modelCatalogCalls, 0)
 })
 
@@ -447,8 +459,8 @@ test('a saved route missing from the catalog stays listed as unavailable', async
 test('save commits one revision-fenced write for the whole route list', async () => {
   const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const writes = []
-  const { require, elements, primitives } = makeRequire()
-  const plugin = definition.factory(require)
+  const handle = makeRequire()
+  const plugin = definition.factory(handle.require)
   const form = {
     state: { status: 'ready', value: { models: [route] }, writable: true, revision: 7 },
     mutate: async (ops, expectedRevision) => {
@@ -456,18 +468,25 @@ test('save commits one revision-fenced write for the whole route list', async ()
       return true
     },
   }
-  const { ctx, state } = makeCtx({ form })
+  const { ctx, state } = makeCtx({
+    form,
+    withCatalog: true,
+    groups: [{ id: 'cotton-codex', name: 'Cotton Codex', models: [{ id: 'gpt-5.6-luna', name: 'Luna' }] }],
+  })
   plugin.apply(ctx)
 
   const t = kitFor(state, NS)
-  render(state, { view: 'page', form, t })
-  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
-  await settingsForm.props.onSave()
+  const props = { view: 'page', form, t }
+  await renderSettled(state, props, handle)
+  // Stage the removal of the only saved route, so Save commits an empty list.
+  handle.elements.find((el) => el.component?.name === 'ModelRow').props.onToggle()
+  renderPass(state, props, handle)
+  await frameOf(handle.elements).save.props.onClick()
 
   assert.equal(writes.length, 1)
   // Staged locally and committed as one write, fenced by the revision the drafts
   // were staged against (contract fact 4).
-  assert.deepEqual(writes[0].ops, [{ op: 'set', path: ['models'], value: [route] }])
+  assert.deepEqual(writes[0].ops, [{ op: 'set', path: ['models'], value: [] }])
   assert.equal(writes[0].expectedRevision, 7)
 })
 
@@ -475,29 +494,39 @@ test('a refused write is treated as a failure, not as a silent success', async (
   const writes = []
   const handle = makeRequire()
   const plugin = definition.factory(handle.require)
+  const route = { provider: 'cotton-codex', model: 'gpt-5.6-luna' }
   const form = {
-    state: { status: 'ready', value: { models: [] }, writable: true, revision: 3 },
+    state: { status: 'ready', value: { models: [route] }, writable: true, revision: 3 },
     mutate: async (ops, expectedRevision) => {
       writes.push({ ops, expectedRevision })
       return false
     },
   }
-  const { ctx, state } = makeCtx({ form })
+  const { ctx, state } = makeCtx({
+    form,
+    withCatalog: true,
+    groups: [{ id: 'cotton-codex', name: 'Cotton Codex', models: [{ id: 'gpt-5.6-luna', name: 'Luna' }] }],
+  })
   plugin.apply(ctx)
 
   const t = kitFor(state, NS)
-  render(state, { view: 'page', form, t })
-  const settingsForm = findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
-  await settingsForm.props.onSave()
+  const props = { view: 'page', form, t }
+  await renderSettled(state, props, handle)
+  handle.elements.find((el) => el.component?.name === 'ModelRow').props.onToggle()
+  renderPass(state, props, handle)
+  await frameOf(handle.elements).save.props.onClick()
+  renderPass(state, props, handle)
+
   assert.equal(writes.length, 1)
   assert.equal(writes[0].expectedRevision, 3)
-
-  // A refused write must surface as the official form's own failure state; a
-  // silent success would leave the user thinking the list was saved.
-  renderPass(state, { view: 'page', form, t }, handle)
-  const settled = findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
-  assert.equal(settled.props.state.failed, true)
-  assert.equal(settled.props.state.saving, false)
+  // A refused write must surface as a failure notice; a silent success would
+  // leave the user thinking the list was saved. The draft stays dirty so a
+  // retry is one click away.
+  const settled = frameOf(handle.elements)
+  assert.equal(settled.failed, true)
+  assert.equal(settled.dirty, true)
+  assert.equal(settled.save.children[0], t('save'))
+  assert.equal(settled.actions.children.find((child) => child?.props?.className === 'rs-failure').children[0], t('saveFailed'))
 })
 
 test('a staged change marks the form dirty and an accepted save clears it', async () => {
@@ -521,28 +550,28 @@ test('a staged change marks the form dirty and an accepted save clears it', asyn
 
   const t = kitFor(state, NS)
   const props = { view: 'page', form, t }
-  const officialForm = () => findElement(handle.elements, (el) => el.component === handle.primitives.SettingsForm)
+  const frame = () => frameOf(handle.elements)
   await renderSettled(state, props, handle)
-  assert.equal(officialForm().props.state.dirty, false)
+  assert.equal(frame().dirty, false)
 
   // Unchecking the route stages a draft and marks the entry dirty; nothing
-  // reaches the Host until the official form's own Save is used.
+  // reaches the Host until the form's own Save is used.
   const row = handle.elements.find((el) => el.component?.name === 'ModelRow')
   row.props.onToggle()
   renderPass(state, props, handle)
-  assert.equal(officialForm().props.state.dirty, true)
+  assert.equal(frame().dirty, true)
   assert.equal(writes.length, 0, 'staging a draft must not write')
 
-  await officialForm().props.onSave()
+  await frame().save.props.onClick()
   renderPass(state, props, handle)
-  assert.equal(officialForm().props.state.dirty, false)
-  assert.equal(officialForm().props.state.failed, false)
+  assert.equal(frame().dirty, false)
+  assert.equal(frame().failed, false)
   assert.deepEqual(writes, [{ ops: [{ op: 'set', path: ['models'], value: [] }], expectedRevision: 11 }])
 })
 
 test('a read-only form still renders but can never write', async () => {
   const writes = []
-  const { require, elements, primitives } = makeRequire()
+  const { require, elements } = makeRequire()
   const plugin = definition.factory(require)
   const form = {
     state: { status: 'ready', value: { models: [] }, writable: false, revision: 5 },
@@ -556,9 +585,12 @@ test('a read-only form still renders but can never write', async () => {
 
   const t = kitFor(state, NS)
   render(state, { view: 'page', form, t })
-  const settingsForm = findElement(elements, (el) => el.component === primitives.SettingsForm)
-  assert.equal(settingsForm.props.state.writable, false)
-  await settingsForm.props.onSave()
+  const frame = frameOf(elements)
+  assert.equal(frame.readOnly, true)
+  assert.equal(frame.actions.children
+    .find((child) => child?.props?.className === 'rs-readonly').children[0], t('readOnly'))
+  assert.equal(frame.save.props.disabled, true)
+  await frame.save.props.onClick()
   assert.equal(writes.length, 0, 'a read-only form must not attempt a write')
 })
 
@@ -645,16 +677,23 @@ test('apply stays inert when the required client services are absent', () => {
   assert.deepEqual(state.registered, [])
 })
 
-test('the official form owns the chrome and the deleted seat stays deleted', () => {
+test('the entry draws no host-owned chrome and the deleted seats stay deleted', () => {
   // Gone with 0.2.0-rc.2: the catch-all seat, the scope binding, and the
   // hand-rolled card frame. Each of these would be a silent reimplementation of
   // what the official surfaces already do, so they are asserted absent.
   assert.doesNotMatch(source, /settings\.plugin\.item/)
   assert.doesNotMatch(source, /settingsScope/)
   assert.doesNotMatch(source, /locale\.bind/)
-  assert.doesNotMatch(source, /rs-footer|rs-save|rs-discard|rs-chevron|rs-head\b|rs-pending|rs-failed|rs-readonly/)
-  // The page body is the official form.
-  assert.match(source, /return e\(SettingsForm, \{/)
+  assert.doesNotMatch(source, /rs-footer|rs-save|rs-discard|rs-chevron|rs-head\b|rs-pending|rs-failed/)
+  // 0.2.2 removed the shared settings primitive altogether: requiring it would
+  // fail in the browser, so the entry must not name it as a module, and it must
+  // not render it (the file header still cites it as history).
+  assert.doesNotMatch(source, /require\('@deepseek-ai\/dsh-client-ui-primitives'\)/)
+  assert.doesNotMatch(source, /e\(SettingsForm/)
+  // What it draws instead is its own body plus the save control, inside the
+  // page whose header and crumb stay the plugins page's.
+  assert.match(source, /className: 'rs-form'/)
+  assert.match(source, /className: 'rs-actions'/)
   // The removed icon must not be resurrected; 0.2.0-rc.2 renamed it.
   assert.doesNotMatch(source, /IconChevronDownOutline14/)
   // This half never hides chat rows from the page. Host 0.2.0-rc.2 renders no

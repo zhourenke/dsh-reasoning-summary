@@ -151,7 +151,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 `Config` 是 `z.object({ models: z.array(ModelSelectionSchema).default([]).volatile() })`。`.volatile()` 让 loader 每次装载都**重新读**这个字段，而不是把激活时取到的值冻住；交给 `apply` 的形式因此是一个带 `get()` 的盒子，`apply` 里按需读 `config.models.get()`。`src/index.ts` 的 `liveModels()` 同时接受盒子和裸数组，所以这个契约不会因为哪次版本变动就悄悄失效。空列表仍是唯一的关闭状态。
 
-三条纪律：**依赖范围不能低于 `~3.18.4`**——`.volatile()` 在 3.18.2 里不存在（实测 `typeof z.array(item).volatile === 'undefined'`），宿主与兄弟插件都写 `~3.18.4`；**不要为了"顺手丢掉旧字段"在这层套 `z.transform`**，那会把 volatile 标记挪到包装层上，`test/core.test.mjs` 里那条 `Config.toJSON()` 断言（字段自身的 ref 上 `type: 'array'` 且 `meta.volatile: true`）就会失败；**文档里与本插件无关的字段现在会原样留在配置文档里**（实测 `retired: true` 仍然存在），插件只读 `models`，因此无害，但不要再写"读取时会被归一化丢弃"。
+三条纪律：**依赖范围不能低于 `~3.18.4`**——`.volatile()` 在 3.18.2 里不存在（实测 `typeof z.array(item).volatile === 'undefined'`）；**并且要跟住宿主当前那一行**（0.2.2-rc.5 的每个宿主包都声明 `~3.19.0`，插件也写 `~3.19.0`，这样同一进程里只有一份 schemastery）；**不要为了"顺手丢掉旧字段"在这层套 `z.transform`**，那会把 volatile 标记挪到包装层上，`test/core.test.mjs` 里那条 `Config.toJSON()` 断言（字段自身的 ref 上 `type: 'array'` 且 `meta.volatile: true`）就会失败；**文档里与本插件无关的字段现在会原样留在配置文档里**（实测 `retired: true` 仍然存在），插件只读 `models`，因此无害，但不要再写"读取时会被归一化丢弃"。
 
 ### 12. `\u0000` 是路由键的分隔符，宿主与客户端各有一份
 
@@ -189,7 +189,7 @@ New-Item -ItemType Junction -Path "$prof\node_modules\@zhourenke\dsh-reasoning-s
 
 **一处类型层硬变更：消息来源不再有万能 `'plugin'`。** 0.2.0 把 `MessageSourceMap` 改成 merge-extensible，**每个生产者在自己模块里声明自己的 kind**，`'plugin'` 这个共用兜底被删除（官方 `dsh-repeat-tool-reminder` 就是自己声明 `'repeat-tool-reminder'` 的样板）。本插件用 `declare module '@deepseek-ai/dsh-llm'` 声明 `'reasoning-summary'`，运行时用 `const MESSAGE_SOURCE = { kind: 'reasoning-summary' }` 拼上各自的 `form`。这不是纯粹的改名——它同时保住了界面标签：chat 的 `contextProducer(source)` 只在少数已知 kind 上特判，其余走 `default: { role: 'inject', label: kind }`，所以这一行仍显示 **「上下文注入 · reasoning-summary」**；若把旧形状原样留着，标签会退化成「… · plugin」。`isProtocolContextMessage` 的判据也随之简化成"`kind` 是本插件的 + 没有 `form`"（kind 已唯一标识生产者，不再需要额外的 `plugin` 字段）。
 
-**删掉的自造轮子（官方已有实现）**：卡片外壳、展开箭头、页脚、保存/放弃按钮与失败提示（官方 `SettingsForm` 全包）；`locale.bind(NS)` + 自铺 `t`（座位按注册里的 `locale` 组合 `t`）；`settingsScope`（换成 `configForms`）。`test/client.test.mjs` 与 `test/runtime.test.mjs` 都断言这些名字**不会再出现**，避免某次重构把它们带回来。
+**删掉的自造轮子（官方已有实现）**：卡片外壳、展开箭头、页脚、保存/放弃按钮与失败提示（当时官方 `SettingsForm` 全包；**0.2.2-rc.5 又把 `SettingsForm` 整个收走了，框和保存控件回到本条目自己画，见 §19**）；`locale.bind(NS)` + 自铺 `t`（座位按注册里的 `locale` 组合 `t`）；`settingsScope`（换成 `configForms`）。`test/client.test.mjs` 与 `test/runtime.test.mjs` 都断言这些名字**不会再出现**，避免某次重构把它们带回来。
 
 **保留的自造部分与理由**：行内的裸 `<input type="checkbox">` **不是**该删的重复——官方 `Checkbox` 必须自带一个 `label` 字符串，用在这条"勾选框 + 名称 + 路由"的两行行里会套出第二层 label，兄弟插件在同一界面上也是手写 input；路由列表的 `.rs-*` 样式（边框、分组、三列网格）同理，官方没有等价物。`SPIN_NOTICE_TEXT` 与官方 `dsh-repeat-tool-reminder` 的提醒也不重复：后者按连续相同调用的次数（默认 3/5/8）在 `tools/post-execute` 上计数，本插件的提示由"同一次输出两个完整摘要且零工具调用"触发，判据、时机与措辞都不同。
 
@@ -233,11 +233,51 @@ node tools/inspect-session.mjs <目标> --json   # 机读输出
 
 **实测（2026-09-30，宿主 0.2.0-rc.2）**：新会话 `session-6a9059a5-…` 判 ACTIVE——协议上下文 1 段（seq 24，1166 字符，无 `form`）、relay 6 次（5 完整 + 1 `missing`）、投递 6 次全部有持久对应、kinds 去重后 `reasoning-summary` 7 条、旧形状 `plugin` 0 条。而**本工作区的长会话判 INACTIVE 且不是故障**：它当前路由 `parkgarden/deepseek-v4.1-flash` 不在配置的两条里，插件按设计不介入（该会话里 460 条 `plugin:reasoning-summary` 是迁移前形状，工具会单独标出来）。这两条合起来正好说明为什么"界面没动静"不能拿来当判据。
 
+### 19. 0.2.2-rc.5 迁移：协议面一条没动，共享表单一去不返
+
+两条半边这次的命运完全不同，必须分开判断：
+
+- **宿主半边：零改动。** 逐项核对过（判据是 rc.5 的声明文件，不是文档）：九个订阅的事件名全部仍在 `Events` 里（`system-prompt/assemble`、`agent/pre-step`、`llm/stream`、`tools/result`、`session/event`、`agent/request-error`、`agent/disposed`、`agent/turn-stopping`、`agent/error`）；`agent/pre-step` 的 payload 仍是 `{ agent, messages, turn, step, signal, modelSelection }`——**`signal` 还在**，而 `agent/pre-step`.`signal` 与 `llm/stream`.`signal` 是同一个对象这件事正是整个拦截链的识别依据，它一旦换成别的判据就会静默失效；`PreStepDecision.enter.messages`、`createUserMessage`、`Session.append` 的 `surfaceOp` 契约、`ContextFormed` 的 `relay`/`notice` 两个 form 全部原样。`tsc` 对 rc.5 类型零报错也印证了这一点。
+- **客户端半边：必须重写渲染层。** `@deepseek-ai/dsh-client-ui-primitives` 在 0.2.2-rc.5 的宿主树里**根本不存在**（336 个 `@deepseek-ai/*` 宿主包里没有这个名字），`SettingsForm` 随之消失。`plugins.row.config` 的 owner props 没变（仍是 `{ view, form? }`，`form` 仍是 `{ state, mutate }`），变的是**谁来画框和保存按钮**：现在的合约是条目自己画（`slot-contract.d.ts`：`page` 视图「renders the form with its save control」，官方 settings 页面也是各自手写 React + CSS）。于是 `SummaryCard` 改成自绘 `div.rs-form` + `div.rs-actions`，`status === 'unavailable'` 的提示也从"交给官方表单"改成自己画。`dsh.client.inject` 里删掉 `primitives`，构建产物因此只 `require('react')`——**旧产物在浏览器里会直接抛 `require` 失败，这是本次唯一真会坏的地方**。
+
+**重写时顺手抓到的三个悬空样式变量**：自绘框之前，`.rs-catalog-error` 的 `--dsw-alias-label-error`、行悬停的 `--dsw-alias-bg-layer-4` 就已经在 rc.5 里**不存在**（主题 CSS 只定义到 `bg-layer-3`，错误色在 `--dsw-alias-state-error-primary`），而 `var()` 取不到变量是**静默继承**，不会报错——所以这两个是既有缺陷，只是没人看得出。现在四个新变量全部按宿主主题的真实定义取名（`--dsw-alias-button-primary-fill` / `-hover`、`--dsw-alias-label-on-color`、`--dsw-alias-interactive-bg-hover`），并且可以这样复核：把插件源码里所有 `var(--dsw-…)` 与主题包里 `--dsw-…:` 的定义集合求差，差集必须为空。
+
+**"有没有重复造轮子"的复核结论**：宿主没有任何包在要求 `<summary>` 标签（真 agent 的系统提示词里零出现），所以本插件补的是宿主没有的一层；而它用的全是宿主设施——`createUserMessage` 建消息（不自己造 message 工厂，对比 `dsh-repeat-tool-reminder` 内联了一份 util 副本）、`Session.append({ surfaceOp: 'append' })` 落盘（不自己 `emit('session/event')`）、`agent.steer()` 驱动 inbox（不自己 splice）、`ContextFormed` 的 `relay`/`notice` 词汇（不自己发明消息形状）、`ctx.configForms` + `plugins.row.config` 座位（不自己造设置页）。`lib/index.js` 里没有 `setTimeout`/`setInterval`、没有 `child_process`/`http`/`fetch`，也没有各自的 glob/grep——这些都是宿主的活。
+
+### 19.1 0.2.2-rc.5 的端到端复核环境（`_rc5/probe-rs/`）
+
+隔离环境与 `dsh-tool-everything` 共用宿主安装，但**不共用 DSH_HOME**：
+
+| 路径 | 内容 |
+|---|---|
+| `_rc5/host/` | 共用的 `@deepseek-ai/dsh@0.2.2-rc.5` 安装（只读使用） |
+| `_rc5/home-rs/` | 本插件自己的 `DSH_HOME`，`profiles/rs/` 挂 `dsh-base` + 本插件（junction 指回工作区仓库），profile 补丁层把 `models` 设成合成路由 `probe/probe-echo` |
+| `_rc5/probe-rs/e2e-rs.mjs` | 主探测脚本，**65 条断言** |
+| `_rc5/probe-rs/inspect-api.mjs` | 离线核对宿主声明面（把 rc.5 的 `.d.ts` 按事件名、`PreStepDecision`、`ConfigFormSnapshot` 等逐段打出来）；查完可留作下次升级的第一站 |
+
+它与别人的 `_rc5/test-home/profiles/rc5` 是两份不同的东西：那边挂 `dsh-tool-everything`，这边挂本插件，各写各的 profile，别互相覆盖。
+
+**这份脚本不是 mock 测试**：它真起 `dsh-base`（端口不监听）、真建 agent（`ctx.agents.create`）、真跑 agent loop 三个 turn，只有**provider 线**是脚本化的（`class ProbeAdapter extends LlmAdapter`，按调用顺序喂 chunk）。断言覆盖：准入闸门 → 启动 → 冷步不注入 → 首个热步注入一次协议上下文（且追加在准入消息之后）→ 工具步可见文本被扣下、工具调用放行 → relay 以 `[Action summary]` 头进下一条请求 → 无摘要时 relay 落成 `[Action summary: missing]` → 协议上下文永不重复 → reasoning-only 连续 4 步被 steer 3 次后收束且不编造答案 → 轮询"宿主设施复用" → 客户端半边与显示元数据。
+
+**踩过的三个坑，写在这里省一次重跑**：
+
+1. **adapter 必须 `extends` 宿主的 `LlmAdapter`**：注册时会走 `providerRetryPolicy`/`resolveModel`/`prepareCall` 的默认实现，裸对象会以 `TypeError: adapter.providerRetryPolicy is not a function` 直接终止进程。
+2. **`sessionId` 每次运行都要换**：探测用的 `DSH_HOME` 会持久化会话日志，复用同一个 id 会得到 `SessionAlreadyExistsError`。
+3. **会话标题也走 `llm/stream`**：它带 `purpose`，脚本化 provider 必须单独应答，否则会被当成一个"没有脚本的对话请求"而抛错——这同时也顺带验证了插件对 `purpose` 的放行分支。
+
+跑法：
+
+```powershell
+node C:\Users\ParkGarden\DSH_Workspace\CreatePlugin\_rc5\probe-rs\e2e-rs.mjs
+```
+
+**它与线上宿主的关系**：这里的绿灯只证明"插件在 0.2.2-rc.5 上行为正确"，不证明线上已经加载；线上 profile 挂的是同一个工作区目录，只有用户手动重启后才会读到新的 `lib/` 与 `package.json`。而且**闸门方向是危险的**：peer 收窄成单臂 `^0.2.2-rc.5` 之后，宿主若起在 `0.2.2-rc.1`，本 bundle 会被判为不兼容并**静默跳过**（只剩一条 compatibility 警告）——所以重启前必须确认宿主确实起在 rc.5 或更高。
+
 ## 测试要点
 
 - **`core.test.mjs`**：纯函数。`inspectSummary` 的 complete/partial/missing 三态、最近邻配对与孤立标签、`normalizeTextBlocks` 的 `forcedStatus` 分支、`routeKey` 的分隔符语义。
 - **`runtime.test.mjs`**：用模拟 ctx 调 `apply`，这是唯一能覆盖事件注册路径的办法。重点是**时序**——relay 必须等所有根工具调用的 durable `tool/result` 提交后才进 inbox；`session/event` 在 `Session.append` 的发布边界内触发，所以改写 inbox 要放进 `queueMicrotask`，否则会撞上 append 自身。另有跨路由可见性、A/B/C/D 序列、设置禁用与重新启用、已准入步骤中途切换后仍跑完、同 session 标题/异信号辅助流隔离、工具结果去重、失败步骤隐藏文本但不建 relay、`prepared-call` 防御性回退；另有三个用例覆盖疑似空转放行：两个完整摘要且零工具调用时放行并注入插件提示（断言注入文本不含模型自己的摘要）、带真实工具调用的步骤不触发、单个摘要不触发。
-- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次两种视图。文件头把实测到的宿主契约写进注释与桩里（`plugins.row.config` 按 `<包名>#<行 id>` 分派、owner props 是 `{ view, form? }`、`configForms.whileServed` 限定注册存活、`mutate(ops, revision)` 返回是否被接受、`SettingsForm` 的 `labels`/`state`/`onSave`/`onDiscard` 形状）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（guide/verification-method.md「验证本身也会骗你」）。桩里的假 `locale` 服务**故意不提供 `bind`**，这样"自己 bind 一个翻译器"会立刻抛错而不是静默遮蔽座位组合出来的 `t`。
+- **`client.test.mjs`**：唯一**真正执行** `lib/client.js` 的测试。先注入 `window.__ModuleLoader__` 捕获注册定义，再用桩 `require` 调用工厂、用模拟 ctx 调 `apply`，最后真的挂载一次两种视图。文件头把实测到的宿主契约写进注释与桩里（`plugins.row.config` 按 `<包名>#<行 id>` 分派、owner props 是 `{ view, form? }`、`configForms.whileServed` 限定注册存活、`mutate(ops, revision)` 返回是否被接受、**page 视图由条目自绘框与保存控件**）——**桩一旦与真实契约漂移，测试就从"发现缺陷"变成"掩盖缺陷"**（guide/verification-method.md「验证本身也会骗你」）。桩里的假 `locale` 服务**故意不提供 `bind`**，这样"自己 bind 一个翻译器"会立刻抛错而不是静默遮蔽座位组合出来的 `t`；`require` 桩现在**只接受 `react`**，任何"再 require 一个宿主任意包"的写法都会当场抛错。
 - **跨插件契约**：用**真实的** `dsh-repeat-tool-reminder` 代码验证"注入的消息不会重置它的重复计数"（该守卫只注册两个 handler、不依赖其它服务，所以能用两行 `ctx.on` 装进同一进程），并配一条**反向对照**——同样大小的 pre-step 批次里换成 `source.kind === 'user'` 的消息时链确实会被清除。没有这条对照，主测试可能因为"清除分支从未执行"而通过。这也是 `@deepseek-ai/dsh-repeat-tool-reminder` 出现在 `devDependencies` 里的**唯一**原因：本包从不 import 它，只有测试加载它，请勿当成未使用的残留删除。
 - **检查器必须先验红**：断言里凡是出现"用正则/转义去匹配常量"的写法，都要先拿一个必然含元字符的样本确认它真的会失败。本项目就抓到过一条：`new RegExp(TEXT.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&'))` 的字符类提前闭合，实测一个字符都不转义，只因为常量里唯一的元字符是 `.`（不转义也能以通配符匹配自己）才一直通过。现在改用 `includes`。
 
@@ -268,18 +308,18 @@ node tools/inspect-session.mjs <目标> --json   # 机读输出
 
 | 包 | 版本 | 用途 |
 |---|---|---|
-| `@deepseek-ai/cordis` | `^4.0.4` | 插件框架、`Volatile` 类型（走自己的版本线） |
-| `@deepseek-ai/dsh-agent` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `Agent`、`agent/pre-step` 等事件、`steer()` |
-| `@deepseek-ai/dsh-llm` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage`、`MessageSourceMap`（本插件往它上面合并自己的 kind） |
-| `@deepseek-ai/dsh-system-prompt` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `system-prompt/assemble` 里取最终 route |
-| `@deepseek-ai/dsh-tools` | `^0.2.0-rc.2 \|\| ^0.2.1-rc.2` | `tools/result` 事件 |
-| `@deepseek-ai/schemastery` | `~3.18.4` | 配置校验，**唯一真实的 `dependencies`**；用 `~` 是硬要求，`.volatile()` 在 3.18.2 里不存在 |
+| `@deepseek-ai/cordis` | `^4.1.0` | 插件框架、`Volatile` 类型（走自己的版本线；0.2.2-rc.5 的宿主钉 `~4.1.0`） |
+| `@deepseek-ai/dsh-agent` | `^0.2.2-rc.5` | `Agent`、`agent/pre-step` 等事件、`steer()` |
+| `@deepseek-ai/dsh-llm` | `^0.2.2-rc.5` | `llm/stream` 瀑布、`StreamChunk`、`createUserMessage`、`MessageSourceMap`（本插件往它上面合并自己的 kind） |
+| `@deepseek-ai/dsh-system-prompt` | `^0.2.2-rc.5` | `system-prompt/assemble` 里取最终 route |
+| `@deepseek-ai/dsh-tools` | `^0.2.2-rc.5` | `tools/result` 事件 |
+| `@deepseek-ai/schemastery` | `~3.19.0` | 配置校验，**唯一真实的 `dependencies`**；用 `~` 是硬要求，`.volatile()` 在 3.18.2 里不存在，且只有跟住宿主这一行才能保证同一进程里只有一份 |
 
-已测试版本：**DSH v0.2.0-rc.2**（2026-09）与 **v0.2.1-rc.2**（2026-10），双轨支持。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
+已测试版本：**DSH v0.2.2-rc.5**（2026-11），单基线。更早的宿主（`0.2.0-rc.2` / `0.2.1-rc.2`）已不再维护，`peerDependencies` 也不再为其留窗口。升级 DSH 后逐个核对**值导入**是否仍是宿主导出（过渡 API 会悄悄变成内部符号，插件解析到自己的私有副本时永远看不见）。
 
 `dsh-settings` 已从 peer 与 devDeps 一起移除：配置不再经服务，宿主也不再需要我们声明它的类型增强。
 
-`devDependencies` 里的宿主包**钉死到基线精确版本**（`4.0.4` / `0.2.0-rc.2`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试；`0.2.1-rc.2` 的类型校验与端到端在 `_next-compat/` 隔离环境中复核。`@deepseek-ai/dsh-client-ui-primitives`（浏览器半边现在只取它的 `SettingsForm`）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
+`devDependencies` 里的宿主包**钉死到基线精确版本**（`4.1.0` / `0.2.2-rc.5`）：连接点安装时插件解析到的是自己 `node_modules` 里的副本，写范围就会对着与线上不同的宿主做类型检查与测试；端到端在 `_rc5/` 隔离环境中复核（见「19.1」）。`@deepseek-ai/dsh-client-ui-settings`（`ctx.configForms` 的提供方）与 `@deepseek-ai/dsh-repeat-tool-reminder`（跨插件契约测试）同样只在 `devDependencies` 里。
 
 `import type {} from '@deepseek-ai/dsh-…'` 是**类型增强导入**，只在类型层存在：这些包把各自的事件并进 Cordis 的 `Events` 接口，不加载声明文件就没有订阅事件名的类型。当前 `dsh-agent` 与 `dsh-llm` 是真的在导入类型（`Agent`、`PreStepDecision`、`StreamChunk`、`ConversationMessage`、`ContextFormed`），**只有 `dsh-system-prompt` 与 `dsh-tools` 是纯增强**——`system-prompt/assemble` 只由 `dsh-system-prompt` 声明，它若只作为 `dsh-agent` 的传递依赖出现就属于巧合而非依赖。`import type {}` 在运行时被完全擦除，因此不会拉进宿主包的私有副本，也不会被 `noUnusedLocals` 报为未使用；反过来，这些行看起来"没用到"也不要删。
 
@@ -287,7 +327,7 @@ DSH 升级后按 `PLUGIN_RELEASE_GUIDE.md`「DSH 升级后的复核」重新核�
 
 工作区级文档 `PLUGIN_RELEASE_GUIDE.md`（位于仓库外的 `DSH_Workspace/CreatePlugin/`，**不随 git 分发**）收录了更完整的开发、发布与排错经验：构建提交纪律、连接点安装的连带后果、模型文案的落点与取证、`tsc` 拼接缝等。开发时对照查阅。
 
-**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」（双轨支持下仍为 `0.2.0-rc2.2`，窗口上界由 `peerDependencies` 与 README 表达；下次 tuple 迁移至 `0.2.1` 时采用保留点的 `rc.2.N` 形状，如 `0.2.1-rc.2.1`），而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
+**版本号怎么算、什么时候改，也以它为准**（「插件版本号」一节）：号写成「支持窗口下界的宿主版本收掉预发布里的点 + `.<n>`」；窗口收窄回单代后，上界由 `peerDependencies` 与 README 直接表达，不再需要 `||` 拼臂。本次 tuple 迁移按保留点的 `rc.5.N` 形状写成 **`0.2.2-rc.5.1`**（跨 tuple 换形状不会降级：`semver.compare('0.2.2-rc.5.1','0.2.0-rc2.2') = 1`，且 `satisfies('0.2.2-rc.5.1','^0.2.2-rc.5')` 为真，所以号仍落在 peer 声明的放行区间里）。而**改号只在用户要求时发生**——用户会在推送前提出，没提就不要动 `package.json` 的 `version`，也不要追问"要不要升号／要不要推送"。
 
 ## 许可证
 
